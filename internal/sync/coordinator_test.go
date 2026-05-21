@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"envfuse/internal/config"
 	"envfuse/internal/clock"
 	"envfuse/internal/state"
 )
@@ -179,3 +180,164 @@ func TestRunCycle_TimeoutAbortsCycle(t *testing.T) {
 }
 
 var _ clock.Clock = stubClock{}
+
+func TestRunCycle_EnvMappingMissingKeyClassified(t *testing.T) {
+	t.Parallel()
+
+	store := state.NewStore()
+	provider := &scriptedUnitProvider{
+		results: map[string][]scriptedUnitResult{
+			"app/base": {
+				{data: map[string]any{"API_KEY": "abc"}},
+			},
+		},
+	}
+
+	coordinator := newCoordinatorWithClock(provider, store, 100*time.Millisecond, stubClock{})
+	result := coordinator.RunCycleWithEnvMappings(context.Background(), []string{"app/base"}, []config.EnvMapping{{
+		Path:   "app/base",
+		Key:    "MISSING",
+		EnvVar: "APP_API_KEY",
+	}})
+
+	if result.Status != CycleStatusFailed {
+		t.Fatalf("expected failed status, got %q", result.Status)
+	}
+	if result.ErrorClass != "env_mapping_unresolved" {
+		t.Fatalf("expected env_mapping_unresolved, got %q", result.ErrorClass)
+	}
+}
+
+func TestRunCycle_EnvMappingMissingPathClassified(t *testing.T) {
+	t.Parallel()
+
+	store := state.NewStore()
+	provider := &scriptedUnitProvider{
+		results: map[string][]scriptedUnitResult{
+			"app/base": {
+				{data: map[string]any{"API_KEY": "abc"}},
+			},
+		},
+	}
+
+	coordinator := newCoordinatorWithClock(provider, store, 100*time.Millisecond, stubClock{})
+	result := coordinator.RunCycleWithEnvMappings(context.Background(), []string{"app/base"}, []config.EnvMapping{{
+		Path:   "missing/path",
+		Key:    "API_KEY",
+		EnvVar: "APP_API_KEY",
+	}})
+
+	if result.Status != CycleStatusFailed {
+		t.Fatalf("expected failed status, got %q", result.Status)
+	}
+	if result.ErrorClass != "env_mapping_unresolved" {
+		t.Fatalf("expected env_mapping_unresolved, got %q", result.ErrorClass)
+	}
+}
+
+func TestRunCycle_NoCommitOnEnvValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	store := state.NewStore()
+	provider := &scriptedUnitProvider{
+		results: map[string][]scriptedUnitResult{
+			"app/base": {
+				{data: map[string]any{"API_KEY": "v1"}},
+				{data: map[string]any{"API_KEY": "v2"}},
+			},
+		},
+	}
+
+	coordinator := newCoordinatorWithClock(provider, store, 100*time.Millisecond, stubClock{})
+	first := coordinator.RunCycleWithEnvMappings(context.Background(), []string{"app/base"}, []config.EnvMapping{{
+		Path:   "app/base",
+		Key:    "API_KEY",
+		EnvVar: "APP_API_KEY",
+	}})
+	if first.Status != CycleStatusSuccess {
+		t.Fatalf("expected initial success, got %q", first.Status)
+	}
+	if got := store.LastAppliedEnv()["APP_API_KEY"]; got != "v1" {
+		t.Fatalf("expected APP_API_KEY=v1 after first cycle, got %q", got)
+	}
+
+	second := coordinator.RunCycleWithEnvMappings(context.Background(), []string{"app/base"}, []config.EnvMapping{{
+		Path:   "app/base",
+		Key:    "MISSING",
+		EnvVar: "APP_API_KEY",
+	}})
+	if second.Status != CycleStatusFailed {
+		t.Fatalf("expected failed status, got %q", second.Status)
+	}
+	if second.ErrorClass != "env_mapping_unresolved" {
+		t.Fatalf("expected env_mapping_unresolved, got %q", second.ErrorClass)
+	}
+
+	if got := store.LastAppliedEnv()["APP_API_KEY"]; got != "v1" {
+		t.Fatalf("expected APP_API_KEY to remain v1 after failed cycle, got %q", got)
+	}
+}
+
+func TestRunCycle_EnvMappingDuplicateEnvVarRejected(t *testing.T) {
+	t.Parallel()
+
+	store := state.NewStore()
+	provider := &scriptedUnitProvider{
+		results: map[string][]scriptedUnitResult{
+			"app/base": {
+				{data: map[string]any{"API_KEY": "abc"}},
+			},
+		},
+	}
+
+	coordinator := newCoordinatorWithClock(provider, store, 100*time.Millisecond, stubClock{})
+	result := coordinator.RunCycleWithEnvMappings(context.Background(), []string{"app/base"}, []config.EnvMapping{
+		{Path: "app/base", Key: "API_KEY", EnvVar: "APP_API_KEY"},
+		{Path: "app/base", Key: "API_KEY", EnvVar: "APP_API_KEY"},
+	})
+
+	if result.Status != CycleStatusFailed {
+		t.Fatalf("expected failed status for duplicate env var mapping, got %q", result.Status)
+	}
+	if result.ErrorClass != "env_mapping_invalid" {
+		t.Fatalf("expected env_mapping_invalid, got %q", result.ErrorClass)
+	}
+	if len(store.LastAppliedEnv()) != 0 {
+		t.Fatalf("expected no committed env payload on validation failure")
+	}
+}
+
+func TestRunCycle_EnvMappingCommitsOnlyDeclaredEnvVars(t *testing.T) {
+	t.Parallel()
+
+	store := state.NewStore()
+	provider := &scriptedUnitProvider{
+		results: map[string][]scriptedUnitResult{
+			"app/base": {
+				{data: map[string]any{"API_KEY": "abc", "EXTRA": "ignored"}},
+			},
+		},
+	}
+
+	coordinator := newCoordinatorWithClock(provider, store, 100*time.Millisecond, stubClock{})
+	result := coordinator.RunCycleWithEnvMappings(context.Background(), []string{"app/base"}, []config.EnvMapping{{
+		Path:   "app/base",
+		Key:    "API_KEY",
+		EnvVar: "APP_API_KEY",
+	}})
+
+	if result.Status != CycleStatusSuccess {
+		t.Fatalf("expected success status, got %q", result.Status)
+	}
+
+	applied := store.LastAppliedEnv()
+	if got := applied["APP_API_KEY"]; got != "abc" {
+		t.Fatalf("expected APP_API_KEY=abc, got %q", got)
+	}
+	if _, ok := applied["EXTRA"]; ok {
+		t.Fatalf("expected undeclared key EXTRA to be absent")
+	}
+	if _, ok := applied["HOME"]; ok {
+		t.Fatalf("expected host key HOME to never be implicitly injected")
+	}
+}
