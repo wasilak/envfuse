@@ -2,47 +2,72 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"envfuse/internal/config"
 	"envfuse/internal/provider"
 	localprovider "envfuse/internal/provider/local"
+	"envfuse/internal/state"
 	"golang.org/x/sync/errgroup"
 )
 
 type Coordinator struct {
-	provider provider.Provider
+	provider       provider.Provider
+	store          *state.Store
+	perPathTimeout time.Duration
 }
 
 func NewCoordinator(p provider.Provider) *Coordinator {
-	return &Coordinator{provider: p}
+	return NewCoordinatorWithStore(p, state.NewStore(), 2*time.Second)
+}
+
+func NewCoordinatorWithStore(p provider.Provider, s *state.Store, perPathTimeout time.Duration) *Coordinator {
+	return &Coordinator{provider: p, store: s, perPathTimeout: perPathTimeout}
+}
+
+func NewStateStore() *state.Store {
+	return state.NewStore()
 }
 
 func (c *Coordinator) RunCycle(ctx context.Context, secretPaths []string) CycleResult {
 	uniq := dedupe(secretPaths)
 	fetched := make([]string, 0, len(uniq))
+	candidate := make(map[string]map[string]any, len(uniq))
 	var mu sync.Mutex
 
 	g, gctx := errgroup.WithContext(ctx)
 	for _, path := range uniq {
 		path := path
 		g.Go(func() error {
-			_, err := c.provider.Fetch(gctx, path)
+			pathCtx, cancel := context.WithTimeout(gctx, c.perPathTimeout) // per SYNC-03
+			defer cancel()
+
+			data, err := c.provider.Fetch(pathCtx, path)
 			if err != nil {
 				return fmt.Errorf("fetch path %s: %w", path, err)
 			}
 			mu.Lock()
 			fetched = append(fetched, path)
+			candidate[path] = copyKV(data)
 			mu.Unlock()
 			return nil
 		})
 	}
 
 	if err := g.Wait(); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return CycleResult{Status: CycleStatusAborted, ErrorClass: "fetch_aborted"}
+		}
 		return CycleResult{Status: CycleStatusFailed, ErrorClass: "fetch_failed"}
 	}
+
+	// Stage and commit applied snapshot only after full-batch success, per SYNC-04.
+	c.store.StageCandidate(candidate)
+	c.store.CommitCandidate()
 
 	sort.Strings(fetched)
 	return CycleResult{Status: CycleStatusSuccess, FetchedPaths: fetched}
@@ -72,6 +97,14 @@ func dedupe(in []string) []string {
 		}
 		seen[p] = struct{}{}
 		out = append(out, p)
+	}
+	return out
+}
+
+func copyKV(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
 	return out
 }

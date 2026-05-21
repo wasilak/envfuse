@@ -9,7 +9,7 @@ const (
 )
 
 type CycleResult struct {
-	Status      CycleStatus
+	Status       CycleStatus
 	FetchedPaths []string
-	ErrorClass  string
+	ErrorClass   string
 }
