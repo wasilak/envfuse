@@ -2,7 +2,11 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"os"
 	"testing"
 	"time"
@@ -190,5 +194,327 @@ func TestDualVector_EnvMappingConfigAcceptsEnvMappingsInStrictSchema(t *testing.
 
 	if _, err := config.LoadConfig(configPath); err != nil {
 		t.Fatalf("expected strict schema to accept env_mappings, got error: %v", err)
+	}
+}
+
+func TestDualVector_Templates(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	secretsPath := filepath.Join(tmpDir, "secrets.json")
+	renderedPath := filepath.Join(tmpDir, "app.env")
+	configPath := filepath.Join(tmpDir, "seon.json")
+
+	secretsJSON := `{
+		"app/base": {"API_KEY": "abc123"}
+	}`
+	configJSON := `{
+		"provider_type": "local",
+		"local_file_path": "` + secretsPath + `",
+		"secret_paths": ["app/base"],
+		"env_mappings": [
+			{"path": "app/base", "key": "API_KEY", "env_var": "APP_API_KEY"}
+		],
+		"templates": [
+			{
+				"name": "app-env",
+				"content": "APP_API_KEY={{ index (index . \"app/base\") \"API_KEY\" }}\\n",
+				"output_path": "` + renderedPath + `",
+				"required_paths": ["app/base"]
+			}
+		]
+	}`
+
+	if err := os.WriteFile(secretsPath, []byte(secretsJSON), 0o600); err != nil {
+		t.Fatalf("write secrets fixture: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	res := sync.RunSingleCycleFromConfig(context.Background(), configPath)
+	if res.Status != sync.CycleStatusSuccess {
+		t.Fatalf("expected success status for template + env cycle, got %q (%s)", res.Status, res.ErrorClass)
+	}
+
+	rendered, err := os.ReadFile(renderedPath)
+	if err != nil {
+		t.Fatalf("expected rendered file to exist, read failed: %v", err)
+	}
+	if got := strings.TrimSpace(string(rendered)); got != "APP_API_KEY=abc123" {
+		t.Fatalf("expected rendered file content APP_API_KEY=abc123, got %q", got)
+	}
+}
+
+func TestDualVector_Atomic(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	secretsPath := filepath.Join(tmpDir, "secrets.json")
+	renderedPath := filepath.Join(tmpDir, "app.env")
+	configPath := filepath.Join(tmpDir, "seon.json")
+
+	if err := os.WriteFile(renderedPath, []byte("LAST_GOOD=v1\n"), 0o600); err != nil {
+		t.Fatalf("seed last-known-good rendered file: %v", err)
+	}
+
+	secretsJSON := `{
+		"app/base": {"API_KEY": "abc123"}
+	}`
+	configJSON := `{
+		"provider_type": "local",
+		"local_file_path": "` + secretsPath + `",
+		"secret_paths": ["app/base"],
+		"env_mappings": [
+			{"path": "app/base", "key": "API_KEY", "env_var": "APP_API_KEY"}
+		],
+		"templates": [
+			{
+				"name": "app-env",
+				"content": "APP_API_KEY={{ index (index . \"app/base\") \"MISSING\" }}\\n",
+				"output_path": "` + renderedPath + `",
+				"required_paths": ["app/base"]
+			}
+		]
+	}`
+
+	if err := os.WriteFile(secretsPath, []byte(secretsJSON), 0o600); err != nil {
+		t.Fatalf("write secrets fixture: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	res := sync.RunSingleCycleFromConfig(context.Background(), configPath)
+	if res.Status != sync.CycleStatusFailed {
+		t.Fatalf("expected failed status when template branch fails, got %q", res.Status)
+	}
+	if res.ErrorClass != "template_missing_key" {
+		t.Fatalf("expected error class template_missing_key, got %q", res.ErrorClass)
+	}
+
+	rendered, err := os.ReadFile(renderedPath)
+	if err != nil {
+		t.Fatalf("expected last-known-good rendered file to still exist, read failed: %v", err)
+	}
+	if got := strings.TrimSpace(string(rendered)); got != "LAST_GOOD=v1" {
+		t.Fatalf("expected rendered file to stay on last-known-good value, got %q", got)
+	}
+}
+
+func TestDualVector_ChildStartEnv(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	secretsPath := filepath.Join(tmpDir, "secrets.json")
+	configPath := filepath.Join(tmpDir, "seon.json")
+	childOutPath := filepath.Join(tmpDir, "child-start.txt")
+
+	secretsJSON := `{
+		"app/base": {"API_KEY": "abc123"}
+	}`
+	configJSON := `{
+		"provider_type": "local",
+		"local_file_path": "` + secretsPath + `",
+		"secret_paths": ["app/base"],
+		"env_mappings": [
+			{"path": "app/base", "key": "API_KEY", "env_var": "APP_API_KEY"}
+		]
+	}`
+
+	if err := os.WriteFile(secretsPath, []byte(secretsJSON), 0o600); err != nil {
+		t.Fatalf("write secrets fixture: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	cmd := exec.Command("go", "run", "./cmd/envfuse", "-config", configPath, "-once", "--", "/bin/sh", "-c", "printf '%s' \"$APP_API_KEY\" > '"+childOutPath+"'")
+	cmd.Dir = filepath.Join("..", "..")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("envfuse run failed: %v\noutput=%s", err, string(output))
+	}
+
+	got, err := os.ReadFile(childOutPath)
+	if err != nil {
+		t.Fatalf("expected child output file to exist, read failed: %v", err)
+	}
+	if string(got) != "abc123" {
+		t.Fatalf("expected child to receive APP_API_KEY=abc123, got %q", string(got))
+	}
+}
+
+func TestDualVector_ChildRestartEnv(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	secretsPath := filepath.Join(tmpDir, "secrets.json")
+	configPath := filepath.Join(tmpDir, "seon.json")
+	childOutPath := filepath.Join(tmpDir, "child-restart.txt")
+
+	configJSON := `{
+		"provider_type": "local",
+		"local_file_path": "` + secretsPath + `",
+		"secret_paths": ["app/base"],
+		"env_mappings": [
+			{"path": "app/base", "key": "API_KEY", "env_var": "APP_API_KEY"}
+		]
+	}`
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	writeSecrets := func(v string) {
+		t.Helper()
+		payload, err := json.Marshal(map[string]map[string]string{"app/base": {"API_KEY": v}})
+		if err != nil {
+			t.Fatalf("marshal secrets: %v", err)
+		}
+		if err := os.WriteFile(secretsPath, payload, 0o600); err != nil {
+			t.Fatalf("write secrets: %v", err)
+		}
+	}
+
+	runChild := func() {
+		t.Helper()
+		cmd := exec.Command("go", "run", "./cmd/envfuse", "-config", configPath, "-once", "--", "/bin/sh", "-c", "printf '%s' \"$APP_API_KEY\" > '"+childOutPath+"'")
+		cmd.Dir = filepath.Join("..", "..")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("envfuse run failed: %v\noutput=%s", err, string(output))
+		}
+	}
+
+	writeSecrets("v1")
+	runChild()
+	first, err := os.ReadFile(childOutPath)
+	if err != nil {
+		t.Fatalf("read first child output: %v", err)
+	}
+	if string(first) != "v1" {
+		t.Fatalf("expected first launch env to be v1, got %q", string(first))
+	}
+
+	writeSecrets("v2")
+	runChild()
+	second, err := os.ReadFile(childOutPath)
+	if err != nil {
+		t.Fatalf("read second child output: %v", err)
+	}
+	if string(second) != "v2" {
+		t.Fatalf("expected restart launch env to be v2, got %q", string(second))
+	}
+}
+
+func TestDualVector_MissingKey(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	secretsPath := filepath.Join(tmpDir, "secrets.json")
+	renderedPath := filepath.Join(tmpDir, "app.env")
+	configPath := filepath.Join(tmpDir, "seon.json")
+
+	if err := os.WriteFile(renderedPath, []byte("LAST_GOOD=v1\n"), 0o600); err != nil {
+		t.Fatalf("seed rendered file: %v", err)
+	}
+
+	secretsJSON := `{
+		"app/base": {"API_KEY": "abc123"}
+	}`
+	configJSON := `{
+		"provider_type": "local",
+		"local_file_path": "` + secretsPath + `",
+		"secret_paths": ["app/base"],
+		"env_mappings": [
+			{"path": "app/base", "key": "API_KEY", "env_var": "APP_API_KEY"}
+		],
+		"templates": [
+			{
+				"name": "app-env",
+				"content": "APP_API_KEY={{ index (index . \"app/base\") \"MISSING\" }}\\n",
+				"output_path": "` + renderedPath + `",
+				"required_paths": ["app/base"]
+			}
+		]
+	}`
+
+	if err := os.WriteFile(secretsPath, []byte(secretsJSON), 0o600); err != nil {
+		t.Fatalf("write secrets fixture: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	res := sync.RunSingleCycleFromConfig(context.Background(), configPath)
+	if res.Status != sync.CycleStatusFailed {
+		t.Fatalf("expected failed status when required template key is missing, got %q", res.Status)
+	}
+	if res.ErrorClass != "template_missing_key" {
+		t.Fatalf("expected error class template_missing_key, got %q", res.ErrorClass)
+	}
+
+	rendered, err := os.ReadFile(renderedPath)
+	if err != nil {
+		t.Fatalf("expected previous rendered file to remain after failure, read failed: %v", err)
+	}
+	if got := strings.TrimSpace(string(rendered)); got != "LAST_GOOD=v1" {
+		t.Fatalf("expected last-known-good rendered file to remain unchanged, got %q", got)
+	}
+}
+
+func TestDualVector_PathGuard(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	secretsPath := filepath.Join(tmpDir, "secrets.json")
+	renderedPath := filepath.Join(tmpDir, "app.env")
+	configPath := filepath.Join(tmpDir, "seon.json")
+
+	if err := os.WriteFile(renderedPath, []byte("LAST_GOOD=v1\n"), 0o600); err != nil {
+		t.Fatalf("seed rendered file: %v", err)
+	}
+
+	secretsJSON := `{
+		"app/base": {"API_KEY": "abc123"}
+	}`
+	configJSON := `{
+		"provider_type": "local",
+		"local_file_path": "` + secretsPath + `",
+		"secret_paths": ["app/base"],
+		"env_mappings": [
+			{"path": "app/base", "key": "API_KEY", "env_var": "APP_API_KEY"}
+		],
+		"templates": [
+			{
+				"name": "app-env",
+				"content": "APP_API_KEY={{ index (index . \"app/base\") \"API_KEY\" }}\\n",
+				"output_path": "../outside.env",
+				"required_paths": ["app/base"]
+			}
+		]
+	}`
+
+	if err := os.WriteFile(secretsPath, []byte(secretsJSON), 0o600); err != nil {
+		t.Fatalf("write secrets fixture: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	res := sync.RunSingleCycleFromConfig(context.Background(), configPath)
+	if res.Status != sync.CycleStatusFailed {
+		t.Fatalf("expected failed status for unsafe output path, got %q", res.Status)
+	}
+	if res.ErrorClass != "path_disallowed" {
+		t.Fatalf("expected error class path_disallowed, got %q", res.ErrorClass)
+	}
+
+	rendered, err := os.ReadFile(renderedPath)
+	if err != nil {
+		t.Fatalf("expected previous rendered file to remain after path failure, read failed: %v", err)
+	}
+	if got := strings.TrimSpace(string(rendered)); got != "LAST_GOOD=v1" {
+		t.Fatalf("expected last-known-good rendered file to remain unchanged, got %q", got)
 	}
 }
