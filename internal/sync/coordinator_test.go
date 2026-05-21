@@ -3,6 +3,8 @@ package sync
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -339,5 +341,150 @@ func TestRunCycle_EnvMappingCommitsOnlyDeclaredEnvVars(t *testing.T) {
 	}
 	if _, ok := applied["HOME"]; ok {
 		t.Fatalf("expected host key HOME to never be implicitly injected")
+	}
+}
+
+func TestRunCycle_TemplateMissingKey(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	renderedPath := filepath.Join(tmpDir, "app.env")
+
+	store := state.NewStore()
+	provider := &scriptedUnitProvider{
+		results: map[string][]scriptedUnitResult{
+			"app/base": {
+				{data: map[string]any{"API_KEY": "abc"}},
+			},
+		},
+	}
+
+	coordinator := newCoordinatorWithClock(provider, store, 100*time.Millisecond, stubClock{})
+	result := coordinator.RunCycleWithVectors(context.Background(), []string{"app/base"}, []config.EnvMapping{{
+		Path:   "app/base",
+		Key:    "API_KEY",
+		EnvVar: "APP_API_KEY",
+	}}, []config.TemplateSpec{{
+		Name:       "env",
+		Content:    "APP_API_KEY={{ index (index . \"app/base\") \"MISSING\" }}\\n",
+		OutputPath: renderedPath,
+	}})
+
+	if result.Status != CycleStatusFailed {
+		t.Fatalf("expected failed status, got %q", result.Status)
+	}
+	if result.ErrorClass != "template_missing_key" {
+		t.Fatalf("expected template_missing_key, got %q", result.ErrorClass)
+	}
+	if len(store.LastKnownGood()) != 0 {
+		t.Fatalf("expected no commit on template missing key")
+	}
+	if len(store.LastAppliedEnv()) != 0 {
+		t.Fatalf("expected no env payload commit on template missing key")
+	}
+}
+
+func TestRunCycle_DisallowedTarget(t *testing.T) {
+	t.Parallel()
+
+	store := state.NewStore()
+	provider := &scriptedUnitProvider{
+		results: map[string][]scriptedUnitResult{
+			"app/base": {
+				{data: map[string]any{"API_KEY": "abc"}},
+			},
+		},
+	}
+
+	coordinator := newCoordinatorWithClock(provider, store, 100*time.Millisecond, stubClock{})
+	result := coordinator.RunCycleWithVectors(context.Background(), []string{"app/base"}, []config.EnvMapping{{
+		Path:   "app/base",
+		Key:    "API_KEY",
+		EnvVar: "APP_API_KEY",
+	}}, []config.TemplateSpec{{
+		Name:       "env",
+		Content:    "APP_API_KEY={{ index (index . \"app/base\") \"API_KEY\" }}\\n",
+		OutputPath: "../outside.env",
+	}})
+
+	if result.Status != CycleStatusFailed {
+		t.Fatalf("expected failed status, got %q", result.Status)
+	}
+	if result.ErrorClass != "path_disallowed" {
+		t.Fatalf("expected path_disallowed, got %q", result.ErrorClass)
+	}
+	if len(store.LastKnownGood()) != 0 {
+		t.Fatalf("expected no commit on disallowed target")
+	}
+	if len(store.LastAppliedEnv()) != 0 {
+		t.Fatalf("expected no env payload commit on disallowed target")
+	}
+}
+
+func TestRunCycle_DualVectorCommitGate(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	renderedPath := filepath.Join(tmpDir, "app.env")
+
+	store := state.NewStore()
+	provider := &scriptedUnitProvider{
+		results: map[string][]scriptedUnitResult{
+			"app/base": {
+				{data: map[string]any{"API_KEY": "v1"}},
+				{data: map[string]any{"API_KEY": "v2"}},
+			},
+		},
+	}
+
+	coordinator := newCoordinatorWithClock(provider, store, 100*time.Millisecond, stubClock{})
+	first := coordinator.RunCycleWithVectors(context.Background(), []string{"app/base"}, []config.EnvMapping{{
+		Path:   "app/base",
+		Key:    "API_KEY",
+		EnvVar: "APP_API_KEY",
+	}}, []config.TemplateSpec{{
+		Name:       "env",
+		Content:    "APP_API_KEY={{ index (index . \"app/base\") \"API_KEY\" }}\\n",
+		OutputPath: renderedPath,
+	}})
+	if first.Status != CycleStatusSuccess {
+		t.Fatalf("expected first cycle success, got %q", first.Status)
+	}
+	if got := store.LastAppliedEnv()["APP_API_KEY"]; got != "v1" {
+		t.Fatalf("expected APP_API_KEY=v1 after first cycle, got %q", got)
+	}
+	if got := string(store.LastRenderedFiles()[renderedPath]); got != "APP_API_KEY=v1\\n" {
+		t.Fatalf("expected rendered payload APP_API_KEY=v1\\n, got %q", got)
+	}
+
+	second := coordinator.RunCycleWithVectors(context.Background(), []string{"app/base"}, []config.EnvMapping{{
+		Path:   "app/base",
+		Key:    "API_KEY",
+		EnvVar: "APP_API_KEY",
+	}}, []config.TemplateSpec{{
+		Name:       "env",
+		Content:    "APP_API_KEY={{ index (index . \"app/base\") \"MISSING\" }}\\n",
+		OutputPath: renderedPath,
+	}})
+	if second.Status != CycleStatusFailed {
+		t.Fatalf("expected failed status, got %q", second.Status)
+	}
+	if second.ErrorClass != "template_missing_key" {
+		t.Fatalf("expected template_missing_key, got %q", second.ErrorClass)
+	}
+
+	if got := store.LastAppliedEnv()["APP_API_KEY"]; got != "v1" {
+		t.Fatalf("expected APP_API_KEY to remain v1 after failed cycle, got %q", got)
+	}
+	if got := string(store.LastRenderedFiles()[renderedPath]); got != "APP_API_KEY=v1\\n" {
+		t.Fatalf("expected rendered payload to remain APP_API_KEY=v1\\n after failed cycle, got %q", got)
+	}
+
+	rendered, err := os.ReadFile(renderedPath)
+	if err != nil {
+		t.Fatalf("expected committed rendered file to exist, read failed: %v", err)
+	}
+	if got := string(rendered); got != "APP_API_KEY=v1\\n" {
+		t.Fatalf("expected on-disk rendered file to remain APP_API_KEY=v1\\n, got %q", got)
 	}
 }
