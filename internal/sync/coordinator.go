@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"envfuse/internal/clock"
 	"envfuse/internal/config"
 	"envfuse/internal/provider"
 	localprovider "envfuse/internal/provider/local"
@@ -19,6 +20,7 @@ type Coordinator struct {
 	provider       provider.Provider
 	store          *state.Store
 	perPathTimeout time.Duration
+	clock          clock.Clock
 }
 
 func NewCoordinator(p provider.Provider) *Coordinator {
@@ -26,11 +28,19 @@ func NewCoordinator(p provider.Provider) *Coordinator {
 }
 
 func NewCoordinatorWithStore(p provider.Provider, s *state.Store, perPathTimeout time.Duration) *Coordinator {
-	return &Coordinator{provider: p, store: s, perPathTimeout: perPathTimeout}
+	return newCoordinatorWithClock(p, s, perPathTimeout, clock.RealClock{})
+}
+
+func newCoordinatorWithClock(p provider.Provider, s *state.Store, perPathTimeout time.Duration, clk clock.Clock) *Coordinator {
+	return &Coordinator{provider: p, store: s, perPathTimeout: perPathTimeout, clock: clk}
 }
 
 func NewStateStore() *state.Store {
 	return state.NewStore()
+}
+
+func NewCoordinatorWithStoreAndTimeout(p provider.Provider, s *state.Store, perPathTimeout time.Duration) *Coordinator {
+	return NewCoordinatorWithStore(p, s, perPathTimeout)
 }
 
 func (c *Coordinator) RunCycle(ctx context.Context, secretPaths []string) CycleResult {

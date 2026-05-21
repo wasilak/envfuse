@@ -134,7 +134,7 @@ func TestAtomicSync_FailedCyclePreservesLastKnownGood(t *testing.T) {
 		},
 	}
 
-	coordinator := sync.NewCoordinatorWithStore(provider, store, 50*time.Millisecond)
+	coordinator := sync.NewCoordinatorWithStoreAndTimeout(provider, store, 50*time.Millisecond)
 
 	first := coordinator.RunCycle(context.Background(), []string{"app/base", "db/primary"})
 	if first.Status != sync.CycleStatusSuccess {
@@ -174,7 +174,7 @@ func TestAtomicSync_TimeoutCyclePreservesLastKnownGood(t *testing.T) {
 		},
 	}
 
-	coordinator := sync.NewCoordinatorWithStore(provider, store, 10*time.Millisecond)
+	coordinator := sync.NewCoordinatorWithStoreAndTimeout(provider, store, 10*time.Millisecond)
 
 	first := coordinator.RunCycle(context.Background(), []string{"app/base", "db/primary"})
 	if first.Status != sync.CycleStatusSuccess {

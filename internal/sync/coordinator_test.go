@@ -2,10 +2,18 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
+
+	"envfuse/internal/clock"
+	"envfuse/internal/state"
 )
+
+type stubClock struct{}
+
+func (stubClock) Now() time.Time { return time.Unix(0, 0) }
 
 type blockingProvider struct {
 	mu       sync.Mutex
@@ -74,3 +82,100 @@ func TestRunCycle_FetchesDistinctPathsConcurrently(t *testing.T) {
 		t.Fatal("cycle did not complete after releasing provider")
 	}
 }
+
+type scriptedUnitResult struct {
+	data  map[string]any
+	err   error
+	delay time.Duration
+}
+
+type scriptedUnitProvider struct {
+	mu      sync.Mutex
+	results map[string][]scriptedUnitResult
+}
+
+func (p *scriptedUnitProvider) Fetch(ctx context.Context, resourceURI string) (map[string]any, error) {
+	p.mu.Lock()
+	seq := p.results[resourceURI]
+	if len(seq) == 0 {
+		p.mu.Unlock()
+		return nil, errors.New("missing scripted result")
+	}
+	current := seq[0]
+	p.results[resourceURI] = seq[1:]
+	p.mu.Unlock()
+
+	if current.delay > 0 {
+		select {
+		case <-time.After(current.delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	if current.err != nil {
+		return nil, current.err
+	}
+
+	out := make(map[string]any, len(current.data))
+	for k, v := range current.data {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func TestRunCycle_FirstErrorFailsCycle(t *testing.T) {
+	t.Parallel()
+
+	store := state.NewStore()
+	provider := &scriptedUnitProvider{
+		results: map[string][]scriptedUnitResult{
+			"app/base": {
+				{err: errors.New("boom")},
+			},
+			"db/primary": {
+				{data: map[string]any{"PASSWORD": "v2"}},
+			},
+		},
+	}
+
+	coordinator := newCoordinatorWithClock(provider, store, 100*time.Millisecond, stubClock{})
+	result := coordinator.RunCycle(context.Background(), []string{"app/base", "db/primary"})
+
+	if result.Status != CycleStatusFailed {
+		t.Fatalf("expected failed cycle status, got %q", result.Status)
+	}
+
+	if len(store.LastKnownGood()) != 0 {
+		t.Fatalf("expected no commit on failed cycle")
+	}
+}
+
+func TestRunCycle_TimeoutAbortsCycle(t *testing.T) {
+	t.Parallel()
+
+	store := state.NewStore()
+	provider := &scriptedUnitProvider{
+		results: map[string][]scriptedUnitResult{
+			"app/base": {
+				{data: map[string]any{"VERSION": "v2"}},
+			},
+			"db/primary": {
+				{delay: 100 * time.Millisecond, data: map[string]any{"PASSWORD": "late"}},
+			},
+		},
+	}
+
+	coordinator := newCoordinatorWithClock(provider, store, 10*time.Millisecond, stubClock{})
+	result := coordinator.RunCycle(context.Background(), []string{"app/base", "db/primary"})
+
+	if result.Status != CycleStatusAborted {
+		t.Fatalf("expected aborted cycle status, got %q", result.Status)
+	}
+
+	if len(store.LastKnownGood()) != 0 {
+		t.Fatalf("expected no commit on aborted cycle")
+	}
+}
+
+var _ clock.Clock = stubClock{}
