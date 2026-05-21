@@ -12,4 +12,5 @@ type CycleResult struct {
 	Status       CycleStatus
 	FetchedPaths []string
 	ErrorClass   string
+	AppliedEnv   []string
 }

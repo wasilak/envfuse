@@ -10,6 +10,7 @@ import (
 
 	"envfuse/internal/clock"
 	"envfuse/internal/config"
+	"envfuse/internal/inject"
 	"envfuse/internal/provider"
 	localprovider "envfuse/internal/provider/local"
 	"envfuse/internal/state"
@@ -44,6 +45,14 @@ func NewCoordinatorWithStoreAndTimeout(p provider.Provider, s *state.Store, perP
 }
 
 func (c *Coordinator) RunCycle(ctx context.Context, secretPaths []string) CycleResult {
+	return c.RunCycleWithEnvMappings(ctx, secretPaths, nil)
+}
+
+func (c *Coordinator) RunCycleWithEnvMappings(ctx context.Context, secretPaths []string, envMappings []config.EnvMapping) CycleResult {
+	if err := inject.ValidateEnvMappings(envMappings); err != nil {
+		return CycleResult{Status: CycleStatusFailed, ErrorClass: "env_mapping_invalid"}
+	}
+
 	uniq := dedupe(secretPaths)
 	fetched := make([]string, 0, len(uniq))
 	candidate := make(map[string]map[string]any, len(uniq))
@@ -75,12 +84,23 @@ func (c *Coordinator) RunCycle(ctx context.Context, secretPaths []string) CycleR
 		return CycleResult{Status: CycleStatusFailed, ErrorClass: "fetch_failed"}
 	}
 
+	envPayload, err := inject.ResolveEnvMappings(candidate, envMappings)
+	if err != nil {
+		return CycleResult{Status: CycleStatusFailed, ErrorClass: "env_mapping_unresolved"}
+	}
+
+	appliedEnv := make([]string, 0, len(envPayload))
+	for envVar := range envPayload {
+		appliedEnv = append(appliedEnv, envVar)
+	}
+	sort.Strings(appliedEnv)
+
 	// Stage and commit applied snapshot only after full-batch success, per SYNC-04.
-	c.store.StageCandidate(candidate)
+	c.store.StageCandidate(candidate, envPayload)
 	c.store.CommitCandidate()
 
 	sort.Strings(fetched)
-	return CycleResult{Status: CycleStatusSuccess, FetchedPaths: fetched}
+	return CycleResult{Status: CycleStatusSuccess, FetchedPaths: fetched, AppliedEnv: appliedEnv}
 }
 
 func RunSingleCycleFromConfig(ctx context.Context, configPath string) CycleResult {
@@ -95,7 +115,7 @@ func RunSingleCycleFromConfig(ctx context.Context, configPath string) CycleResul
 
 	p := localprovider.New(cfg.LocalFilePath)
 	coordinator := NewCoordinator(p)
-	return coordinator.RunCycle(ctx, cfg.SecretPaths)
+	return coordinator.RunCycleWithEnvMappings(ctx, cfg.SecretPaths, cfg.EnvMappings)
 }
 
 func dedupe(in []string) []string {
