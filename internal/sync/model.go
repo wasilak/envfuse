@@ -13,4 +13,5 @@ type CycleResult struct {
 	FetchedPaths []string
 	ErrorClass   string
 	AppliedEnv   []string
+	RenderedFiles []string
 }

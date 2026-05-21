@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 
+	launcher "envfuse/internal/exec"
+	"envfuse/internal/state"
 	synccycle "envfuse/internal/sync"
 )
 
@@ -22,10 +24,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	result := synccycle.RunSingleCycleFromConfig(context.Background(), configPath)
+	store := state.NewStore()
+	result := synccycle.RunSingleCycleWithStoreFromConfig(context.Background(), configPath, store)
 	fmt.Println(string(result.Status))
 
 	if result.Status != synccycle.CycleStatusSuccess {
 		os.Exit(1)
+	}
+
+	if len(flag.Args()) > 0 {
+		if err := launcher.LaunchWithEnv(flag.Args(), os.Environ(), store.LastAppliedEnv()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 }

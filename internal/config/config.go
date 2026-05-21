@@ -7,16 +7,25 @@ import (
 )
 
 type Config struct {
-	ProviderType  string   `json:"provider_type"`
-	LocalFilePath string   `json:"local_file_path"`
-	SecretPaths   []string `json:"secret_paths"`
-	EnvMappings   []EnvMapping `json:"env_mappings,omitempty"`
+	ProviderType  string         `json:"provider_type"`
+	LocalFilePath string         `json:"local_file_path"`
+	SecretPaths   []string       `json:"secret_paths"`
+	EnvMappings   []EnvMapping   `json:"env_mappings,omitempty"`
+	Templates     []TemplateSpec `json:"templates,omitempty"`
 }
 
 type EnvMapping struct {
 	Path   string `json:"path"`
 	Key    string `json:"key"`
 	EnvVar string `json:"env_var"`
+}
+
+type TemplateSpec struct {
+	Name         string   `json:"name"`
+	Content      string   `json:"content,omitempty"`
+	TemplatePath string   `json:"template_path,omitempty"`
+	OutputPath   string   `json:"output_path"`
+	RequiredPaths []string `json:"required_paths,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -56,6 +65,22 @@ func LoadConfig(path string) (Config, error) {
 			return Config{}, fmt.Errorf("env_mappings[%d].env_var is duplicated: %s", i, mapping.EnvVar)
 		}
 		seenEnvVars[mapping.EnvVar] = struct{}{}
+	}
+
+	seenOutputs := make(map[string]struct{}, len(cfg.Templates))
+	for i, tpl := range cfg.Templates {
+		if tpl.OutputPath == "" {
+			return Config{}, fmt.Errorf("templates[%d].output_path is required", i)
+		}
+		hasInline := tpl.Content != ""
+		hasFile := tpl.TemplatePath != ""
+		if hasInline == hasFile {
+			return Config{}, fmt.Errorf("templates[%d] must set exactly one of content or template_path", i)
+		}
+		if _, exists := seenOutputs[tpl.OutputPath]; exists {
+			return Config{}, fmt.Errorf("templates[%d].output_path is duplicated: %s", i, tpl.OutputPath)
+		}
+		seenOutputs[tpl.OutputPath] = struct{}{}
 	}
 
 	return cfg, nil

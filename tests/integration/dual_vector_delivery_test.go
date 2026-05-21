@@ -241,8 +241,8 @@ func TestDualVector_Templates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected rendered file to exist, read failed: %v", err)
 	}
-	if got := strings.TrimSpace(string(rendered)); got != "APP_API_KEY=abc123" {
-		t.Fatalf("expected rendered file content APP_API_KEY=abc123, got %q", got)
+	if got := string(rendered); got != "APP_API_KEY=abc123\\n" {
+		t.Fatalf("expected rendered file content APP_API_KEY=abc123\\\\n, got %q", got)
 	}
 }
 

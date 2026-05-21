@@ -5,14 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"envfuse/internal/clock"
 	"envfuse/internal/config"
+	"envfuse/internal/fileio"
 	"envfuse/internal/inject"
 	"envfuse/internal/provider"
 	localprovider "envfuse/internal/provider/local"
+	"envfuse/internal/render"
 	"envfuse/internal/state"
 	"golang.org/x/sync/errgroup"
 )
@@ -49,8 +52,19 @@ func (c *Coordinator) RunCycle(ctx context.Context, secretPaths []string) CycleR
 }
 
 func (c *Coordinator) RunCycleWithEnvMappings(ctx context.Context, secretPaths []string, envMappings []config.EnvMapping) CycleResult {
+	return c.runCycleWithVectors(ctx, secretPaths, envMappings, nil)
+}
+
+func (c *Coordinator) RunCycleWithVectors(ctx context.Context, secretPaths []string, envMappings []config.EnvMapping, templates []config.TemplateSpec) CycleResult {
+	return c.runCycleWithVectors(ctx, secretPaths, envMappings, templates)
+}
+
+func (c *Coordinator) runCycleWithVectors(ctx context.Context, secretPaths []string, envMappings []config.EnvMapping, templates []config.TemplateSpec) CycleResult {
 	if err := inject.ValidateEnvMappings(envMappings); err != nil {
 		return CycleResult{Status: CycleStatusFailed, ErrorClass: "env_mapping_invalid"}
+	}
+	if err := fileio.ValidateTemplateTargets(templates); err != nil {
+		return CycleResult{Status: CycleStatusFailed, ErrorClass: "path_disallowed"}
 	}
 
 	uniq := dedupe(secretPaths)
@@ -89,6 +103,35 @@ func (c *Coordinator) RunCycleWithEnvMappings(ctx context.Context, secretPaths [
 		return CycleResult{Status: CycleStatusFailed, ErrorClass: "env_mapping_unresolved"}
 	}
 
+	for _, spec := range templates {
+		for _, path := range spec.RequiredPaths {
+			if _, ok := candidate[path]; !ok {
+				return CycleResult{Status: CycleStatusFailed, ErrorClass: "template_missing_key"}
+			}
+		}
+	}
+
+	rendered, err := render.RenderTemplates(candidate, templates)
+	if err != nil {
+		if strings.Contains(err.Error(), "map has no entry for key") || strings.Contains(err.Error(), "missing key") {
+			return CycleResult{Status: CycleStatusFailed, ErrorClass: "template_missing_key"}
+		}
+		return CycleResult{Status: CycleStatusFailed, ErrorClass: "template_render_failed"}
+	}
+
+	renderedPayload := make(map[string][]byte, len(rendered))
+	filePlan := make([]fileio.FilePayload, 0, len(rendered))
+	for _, out := range rendered {
+		buf := make([]byte, len(out.Content))
+		copy(buf, out.Content)
+		renderedPayload[out.Path] = buf
+		filePlan = append(filePlan, fileio.FilePayload{Path: out.Path, Content: buf})
+	}
+
+	if err := fileio.WriteAtomic(filePlan); err != nil {
+		return CycleResult{Status: CycleStatusFailed, ErrorClass: "file_write_failed"}
+	}
+
 	appliedEnv := make([]string, 0, len(envPayload))
 	for envVar := range envPayload {
 		appliedEnv = append(appliedEnv, envVar)
@@ -96,11 +139,17 @@ func (c *Coordinator) RunCycleWithEnvMappings(ctx context.Context, secretPaths [
 	sort.Strings(appliedEnv)
 
 	// Stage and commit applied snapshot only after full-batch success, per SYNC-04.
-	c.store.StageCandidate(candidate, envPayload)
+	c.store.StageCandidate(candidate, envPayload, renderedPayload)
 	c.store.CommitCandidate()
 
 	sort.Strings(fetched)
-	return CycleResult{Status: CycleStatusSuccess, FetchedPaths: fetched, AppliedEnv: appliedEnv}
+	renderedFiles := make([]string, 0, len(renderedPayload))
+	for path := range renderedPayload {
+		renderedFiles = append(renderedFiles, path)
+	}
+	sort.Strings(renderedFiles)
+
+	return CycleResult{Status: CycleStatusSuccess, FetchedPaths: fetched, AppliedEnv: appliedEnv, RenderedFiles: renderedFiles}
 }
 
 func RunSingleCycleFromConfig(ctx context.Context, configPath string) CycleResult {
@@ -115,7 +164,22 @@ func RunSingleCycleFromConfig(ctx context.Context, configPath string) CycleResul
 
 	p := localprovider.New(cfg.LocalFilePath)
 	coordinator := NewCoordinator(p)
-	return coordinator.RunCycleWithEnvMappings(ctx, cfg.SecretPaths, cfg.EnvMappings)
+	return coordinator.RunCycleWithVectors(ctx, cfg.SecretPaths, cfg.EnvMappings, cfg.Templates)
+}
+
+func RunSingleCycleWithStoreFromConfig(ctx context.Context, configPath string, store *state.Store) CycleResult {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		return CycleResult{Status: CycleStatusFailed, ErrorClass: "config_invalid"}
+	}
+
+	if cfg.ProviderType != "local" {
+		return CycleResult{Status: CycleStatusFailed, ErrorClass: "provider_unsupported"}
+	}
+
+	p := localprovider.New(cfg.LocalFilePath)
+	coordinator := NewCoordinatorWithStoreAndTimeout(p, store, 2*time.Second)
+	return coordinator.RunCycleWithVectors(ctx, cfg.SecretPaths, cfg.EnvMappings, cfg.Templates)
 }
 
 func dedupe(in []string) []string {
