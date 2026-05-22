@@ -116,7 +116,16 @@ Plans:
   3. Operator can switch `provider_type` between supported backends without changing template definitions or application code.
   4. All remote provider communication uses TLS by default and rejects insecure transport paths.
 
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+**Wave 1**
+
+- [x] 04-01-PLAN.md — Vault KVv2 provider vertical slice (config fields + TLS enforcement + buildProvider factory).
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 04-02-PLAN.md — AWS Secrets Manager provider vertical slice (config fields + narrow interface + factory completion + switchability integration test).
 
 ### Phase 5: Operational Safety & Observability
 
@@ -141,5 +150,5 @@ Phases execute in numeric order: 2 → 2.1 → 2.2 → 3 → 3.1 → 4
 | 1. Atomic Sync Foundation (Local-First) | 2/2 | Complete   | 2026-05-21 |
 | 2. Dual-Vector Delivery (Env + Templates) | 3/3 | Complete    | 2026-05-21 |
 | 3. PID 1 Supervision & Reload Control | 3/3 | Complete   | 2026-05-22 |
-| 4. Production Providers & Secure Transport | 0/TBD | Not started | - |
+| 4. Production Providers & Secure Transport | 1/2 | In Progress|  |
 | 5. Operational Safety & Observability | 0/TBD | Not started | - |
