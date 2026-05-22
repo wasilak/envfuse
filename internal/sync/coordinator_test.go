@@ -516,6 +516,31 @@ func TestCoordinator_ProviderFactory_VaultHTTPRejected(t *testing.T) {
 	}
 }
 
+func TestCoordinator_ProviderFactory_AWS(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := tmpDir + "/seon.json"
+	configJSON := `{
+		"provider_type": "aws",
+		"aws_region": "us-east-1",
+		"secret_paths": ["myapp/config"]
+	}`
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	store := state.NewStore()
+	result := RunSingleCycleWithStoreFromConfig(context.Background(), configPath, store)
+
+	// The AWS provider initializes successfully (no real AWS calls needed for factory test),
+	// but the fetch will fail because there are no real AWS credentials in CI.
+	// We just verify the provider was constructed (no "not yet implemented" error).
+	if result.ErrorClass == "provider_init_failed" {
+		t.Fatalf("expected AWS provider to initialize, got provider_init_failed — stub may still be in place")
+	}
+}
+
 func TestCoordinator_ProviderFactory_UnknownProvider(t *testing.T) {
 	t.Parallel()
 
