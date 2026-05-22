@@ -165,7 +165,7 @@ func (c *Coordinator) runCycleWithVectors(ctx context.Context, secretPaths []str
 	}
 }
 
-func buildProvider(ctx context.Context, cfg config.Config) (provider.Provider, error) {
+func buildProvider(_ context.Context, cfg config.Config) (provider.Provider, error) {
 	switch cfg.ProviderType {
 	case "local":
 		return localprovider.New(cfg.LocalFilePath), nil

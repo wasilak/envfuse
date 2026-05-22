@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -121,9 +122,7 @@ func (p *scriptedUnitProvider) Fetch(ctx context.Context, resourceURI string) (m
 	}
 
 	out := make(map[string]any, len(current.data))
-	for k, v := range current.data {
-		out[k] = v
-	}
+	maps.Copy(out, current.data)
 	return out, nil
 }
 
