@@ -4,10 +4,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	osexec "os/exec"
 	"sort"
+	"strings"
 
 	"envfuse/internal/config"
 	"envfuse/internal/state"
@@ -15,7 +17,25 @@ import (
 	"envfuse/internal/supervisor"
 )
 
+func initLogger() {
+	levelVar := new(slog.LevelVar) // default INFO
+	if raw := os.Getenv("ENVFUSE_LOG_LEVEL"); raw != "" {
+		switch strings.ToUpper(raw) {
+		case "DEBUG":
+			levelVar.Set(slog.LevelDebug)
+		case "WARN":
+			levelVar.Set(slog.LevelWarn)
+		case "ERROR":
+			levelVar.Set(slog.LevelError)
+		// INFO is the default; any unrecognized value stays at INFO
+		}
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: levelVar})))
+}
+
 func main() {
+	initLogger()
+
 	var configPath string
 	var once bool
 
@@ -23,13 +43,56 @@ func main() {
 	flag.BoolVar(&once, "once", false, "run one sync cycle then exec child (no supervision loop)")
 	flag.Parse()
 
-	store := state.NewStore()
-	result := synccycle.RunSingleCycleWithStoreFromConfig(context.Background(), configPath, store)
-	fmt.Println(string(result.Status))
-
-	if result.Status != synccycle.CycleStatusSuccess {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("load config failed", "err", err)
 		os.Exit(1)
 	}
+
+	shutdownTimeout, err := cfg.ParsedShutdownTimeout()
+	if err != nil {
+		slog.Error("invalid shutdown_timeout", "err", err)
+		os.Exit(1)
+	}
+
+	pollInterval, err := cfg.ParsedReloadPollInterval()
+	if err != nil {
+		slog.Error("invalid reload_poll_interval", "err", err)
+		os.Exit(1)
+	}
+
+	reloadCooldown, err := cfg.ParsedReloadCooldown()
+	if err != nil {
+		slog.Error("invalid reload_cooldown", "err", err)
+		os.Exit(1)
+	}
+
+	store := state.NewStore()
+	result := synccycle.RunSingleCycleWithStoreFromConfig(context.Background(), configPath, store)
+
+	if result.Status != synccycle.CycleStatusSuccess {
+		slog.Error("initial sync failed", "status", string(result.Status), "error_class", result.ErrorClass)
+		os.Exit(1)
+	}
+
+	// D-08 INFO startup summary
+	fp := result.Fingerprint
+	if len(fp) >= 8 {
+		fp = fp[:8]
+	}
+	slog.Info("envfuse started",
+		"provider_type", cfg.ProviderType,
+		"paths_fetched", len(result.FetchedPaths),
+		"env_vars_applied", len(result.AppliedEnv),
+		"files_rendered", len(result.RenderedFiles),
+		"fingerprint", fp,
+	)
+
+	// D-13 DEBUG env var names applied
+	slog.Debug("env vars applied", "names", result.AppliedEnv)
+
+	// D-14 DEBUG template render details
+	slog.Debug("templates rendered", "output_paths", result.RenderedFiles)
 
 	if len(flag.Args()) == 0 {
 		return
@@ -40,7 +103,7 @@ func main() {
 	if once {
 		// Legacy -once mode: run child directly without a supervision loop.
 		if err := runDirect(flag.Args(), childEnv); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			slog.Error("child exec failed", "err", err)
 			os.Exit(1)
 		}
 		return
@@ -48,30 +111,6 @@ func main() {
 
 	// Long-running supervisor mode (PID 1): supervise child with signal forwarding
 	// and configurable shutdown timeout (SUPV-01/02/03).
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	shutdownTimeout, err := cfg.ParsedShutdownTimeout()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	pollInterval, err := cfg.ParsedReloadPollInterval()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	reloadCooldown, err := cfg.ParsedReloadCooldown()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
 	supCfg := supervisor.Config{
 		Command:            flag.Args(),
 		Env:                childEnv,

@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	osexec "os/exec"
@@ -181,7 +182,7 @@ func spawnChild(command []string, env []string) (*child, error) {
 	cmd.Stdin = os.Stdin
 
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "supervisor: start child: %v\n", err)
+		slog.Error("start child failed", "err", err)
 		return nil, err
 	}
 
