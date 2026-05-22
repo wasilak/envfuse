@@ -28,6 +28,9 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write
+
     strategy:
       matrix:
         os: [linux, darwin]
