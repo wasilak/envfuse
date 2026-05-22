@@ -97,7 +97,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 03-02-PLAN.md — Deterministic fingerprint + restart-on-change vertical slice (candidate-state hash gating).
+- [x] 03-02-PLAN.md — Deterministic fingerprint + restart-on-change vertical slice (candidate-state hash gating).
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -140,6 +140,6 @@ Phases execute in numeric order: 2 → 2.1 → 2.2 → 3 → 3.1 → 4
 |-------|----------------|--------|-----------|
 | 1. Atomic Sync Foundation (Local-First) | 2/2 | Complete   | 2026-05-21 |
 | 2. Dual-Vector Delivery (Env + Templates) | 3/3 | Complete    | 2026-05-21 |
-| 3. PID 1 Supervision & Reload Control | 1/3 | In Progress|  |
+| 3. PID 1 Supervision & Reload Control | 2/3 | In Progress|  |
 | 4. Production Providers & Secure Transport | 0/TBD | Not started | - |
 | 5. Operational Safety & Observability | 0/TBD | Not started | - |
