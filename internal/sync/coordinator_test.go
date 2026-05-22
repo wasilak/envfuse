@@ -488,3 +488,55 @@ func TestRunCycle_DualVectorCommitGate(t *testing.T) {
 		t.Fatalf("expected on-disk rendered file to remain APP_API_KEY=v1\\n, got %q", got)
 	}
 }
+
+func TestCoordinator_ProviderFactory_VaultHTTPRejected(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := tmpDir + "/seon.json"
+	configJSON := `{
+		"provider_type": "vault",
+		"vault_address": "http://vault.example.com",
+		"vault_token": "root",
+		"secret_paths": ["app/config"]
+	}`
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	store := state.NewStore()
+	result := RunSingleCycleWithStoreFromConfig(context.Background(), configPath, store)
+
+	if result.Status != CycleStatusFailed {
+		t.Fatalf("expected CycleStatusFailed, got %q", result.Status)
+	}
+	// http:// vault_address must be rejected — either at config load (config_invalid)
+	// or provider init (provider_init_failed)
+	if result.ErrorClass != "config_invalid" && result.ErrorClass != "provider_init_failed" {
+		t.Fatalf("expected config_invalid or provider_init_failed, got %q", result.ErrorClass)
+	}
+}
+
+func TestCoordinator_ProviderFactory_UnknownProvider(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configPath := tmpDir + "/seon.json"
+	configJSON := `{
+		"provider_type": "unknown_provider_xyz",
+		"secret_paths": ["app/config"]
+	}`
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	store := state.NewStore()
+	result := RunSingleCycleWithStoreFromConfig(context.Background(), configPath, store)
+
+	if result.Status != CycleStatusFailed {
+		t.Fatalf("expected CycleStatusFailed, got %q", result.Status)
+	}
+	if result.ErrorClass != "provider_init_failed" {
+		t.Fatalf("expected provider_init_failed, got %q", result.ErrorClass)
+	}
+}
