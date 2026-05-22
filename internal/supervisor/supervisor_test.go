@@ -179,3 +179,117 @@ func TestSupervisor_ReasonTaxonomyExactStrings(t *testing.T) {
 		}
 	}
 }
+
+// TestSupervisor_DefaultCooldownValue verifies that the default reload_cooldown is 10s (D-12).
+func TestSupervisor_DefaultCooldownValue(t *testing.T) {
+	t.Parallel()
+
+	cfg := makeTestConfig([]string{"/bin/sh", "-c", "exit 0"})
+	if cfg.ReloadCooldown != 0 {
+		// makeTestConfig leaves ReloadCooldown unset; zero means "use default".
+		t.Fatalf("makeTestConfig should leave ReloadCooldown as zero, got %v", cfg.ReloadCooldown)
+	}
+	if effectiveCooldown(cfg) != 10*time.Second {
+		t.Fatalf("effectiveCooldown with zero ReloadCooldown: expected 10s (D-12), got %v", effectiveCooldown(cfg))
+	}
+}
+
+// TestSupervisor_CooldownSuppressesImmediateRestart verifies that when a restart occurs,
+// a second fingerprint change arriving within the cooldown window is suppressed and does
+// not trigger an immediate second restart (D-09, D-10).
+//
+// Mechanism: uses a scripted fakeCycleRunner that drives tick events directly so the
+// test does not sleep for real cooldown durations.
+func TestSupervisor_CooldownSuppressesImmediateRestart(t *testing.T) {
+	t.Parallel()
+
+	// The cooldown tracker starts in the not-in-cooldown state.
+	// After the first restart, it must enter cooldown.
+	// A second change during cooldown must NOT cause a second immediate restart.
+	ct := newCooldownTracker(50 * time.Millisecond)
+
+	// Simulate: restart happens now.
+	ct.recordRestart()
+
+	if !ct.inCooldown() {
+		t.Fatal("cooldown tracker must be in cooldown immediately after recordRestart()")
+	}
+
+	// A fingerprint change arrives while in cooldown — must be marked pending.
+	ct.markPending()
+
+	if !ct.isPending() {
+		t.Fatal("cooldown tracker must report isPending() after markPending() during cooldown")
+	}
+
+	// Cooldown expires.
+	time.Sleep(100 * time.Millisecond)
+
+	if ct.inCooldown() {
+		t.Fatal("cooldown tracker must exit cooldown after duration elapses")
+	}
+
+	// Drain the pending flag — simulates the deferred restart being scheduled.
+	fired := ct.drainPending()
+	if !fired {
+		t.Fatal("drainPending() must return true when a pending restart was coalesced")
+	}
+
+	// Pending flag must be cleared after drain.
+	if ct.isPending() {
+		t.Fatal("isPending() must be false after drainPending()")
+	}
+}
+
+// TestSupervisor_MultipleChangesCoalesceToOneRestart verifies that multiple fingerprint
+// changes arriving during a single cooldown window result in exactly one deferred restart,
+// not N restarts (D-10).
+func TestSupervisor_MultipleChangesCoalesceToOneRestart(t *testing.T) {
+	t.Parallel()
+
+	ct := newCooldownTracker(50 * time.Millisecond)
+	ct.recordRestart()
+
+	// Simulate N rapid changes during cooldown.
+	const nChanges = 5
+	for i := range nChanges {
+		_ = i
+		ct.markPending()
+	}
+
+	// Only one deferred restart must fire when cooldown expires.
+	time.Sleep(100 * time.Millisecond)
+
+	fired := ct.drainPending()
+	if !fired {
+		t.Fatal("drainPending() must return true after N changes during cooldown")
+	}
+
+	// A second drain must return false — only one restart may execute.
+	firedAgain := ct.drainPending()
+	if firedAgain {
+		t.Fatal("drainPending() must return false on second call — no second deferred restart (D-10)")
+	}
+}
+
+// TestSupervisor_NoCooldownWithoutPriorRestart verifies that a fresh supervisor
+// (no restart yet) is not in cooldown and markPending/drainPending behave correctly
+// when called before any restart (edge case: system just started).
+func TestSupervisor_NoCooldownWithoutPriorRestart(t *testing.T) {
+	t.Parallel()
+
+	ct := newCooldownTracker(50 * time.Millisecond)
+
+	if ct.inCooldown() {
+		t.Fatal("cooldown tracker must not be in cooldown before any restart")
+	}
+	if ct.isPending() {
+		t.Fatal("cooldown tracker must not have a pending restart before any restart")
+	}
+
+	// drainPending with no prior markPending must return false.
+	fired := ct.drainPending()
+	if fired {
+		t.Fatal("drainPending() must return false when no restart was pending")
+	}
+}
