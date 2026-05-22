@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,10 @@ type Config struct {
 	ShutdownTimeout    string         `json:"shutdown_timeout,omitempty"`
 	ReloadPollInterval string         `json:"reload_poll_interval,omitempty"`
 	ReloadCooldown     string         `json:"reload_cooldown,omitempty"`
+	VaultAddress       string         `json:"vault_address,omitempty"`
+	VaultToken         string         `json:"vault_token,omitempty"`
+	VaultMount         string         `json:"vault_mount,omitempty"`
+	VaultTLSCACert     string         `json:"vault_tls_ca_cert,omitempty"`
 }
 
 // ParsedShutdownTimeout returns the configured shutdown timeout, or the default
@@ -110,6 +115,10 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if cfg.ProviderType == "local" && cfg.LocalFilePath == "" {
 		return Config{}, fmt.Errorf("local_file_path is required for local provider")
+	}
+
+	if cfg.ProviderType == "vault" && cfg.VaultAddress != "" && !strings.HasPrefix(cfg.VaultAddress, "https://") {
+		return Config{}, fmt.Errorf("vault_address must use https:// scheme (SECU-02), got: %q", cfg.VaultAddress)
 	}
 
 	seenEnvVars := make(map[string]struct{}, len(cfg.EnvMappings))

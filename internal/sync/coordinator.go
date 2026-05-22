@@ -17,6 +17,7 @@ import (
 	"envfuse/internal/inject"
 	"envfuse/internal/provider"
 	localprovider "envfuse/internal/provider/local"
+	vaultprovider "envfuse/internal/provider/vault"
 	"envfuse/internal/render"
 	"envfuse/internal/state"
 	"golang.org/x/sync/errgroup"
@@ -164,17 +165,35 @@ func (c *Coordinator) runCycleWithVectors(ctx context.Context, secretPaths []str
 	}
 }
 
+func buildProvider(ctx context.Context, cfg config.Config) (provider.Provider, error) {
+	switch cfg.ProviderType {
+	case "local":
+		return localprovider.New(cfg.LocalFilePath), nil
+	case "vault":
+		return vaultprovider.New(vaultprovider.Config{
+			Address:   cfg.VaultAddress,
+			Token:     cfg.VaultToken,
+			Mount:     cfg.VaultMount,
+			TLSCACert: cfg.VaultTLSCACert,
+		})
+	case "aws":
+		return nil, fmt.Errorf("aws provider not yet implemented")
+	default:
+		return nil, fmt.Errorf("unsupported provider_type: %q", cfg.ProviderType)
+	}
+}
+
 func RunSingleCycleFromConfig(ctx context.Context, configPath string) CycleResult {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return CycleResult{Status: CycleStatusFailed, ErrorClass: "config_invalid"}
 	}
 
-	if cfg.ProviderType != "local" {
-		return CycleResult{Status: CycleStatusFailed, ErrorClass: "provider_unsupported"}
+	p, err := buildProvider(ctx, cfg)
+	if err != nil {
+		return CycleResult{Status: CycleStatusFailed, ErrorClass: "provider_init_failed"}
 	}
 
-	p := localprovider.New(cfg.LocalFilePath)
 	coordinator := NewCoordinator(p)
 	return coordinator.RunCycleWithVectors(ctx, cfg.SecretPaths, cfg.EnvMappings, cfg.Templates)
 }
@@ -185,11 +204,11 @@ func RunSingleCycleWithStoreFromConfig(ctx context.Context, configPath string, s
 		return CycleResult{Status: CycleStatusFailed, ErrorClass: "config_invalid"}
 	}
 
-	if cfg.ProviderType != "local" {
-		return CycleResult{Status: CycleStatusFailed, ErrorClass: "provider_unsupported"}
+	p, err := buildProvider(ctx, cfg)
+	if err != nil {
+		return CycleResult{Status: CycleStatusFailed, ErrorClass: "provider_init_failed"}
 	}
 
-	p := localprovider.New(cfg.LocalFilePath)
 	coordinator := NewCoordinatorWithStoreAndTimeout(p, store, 2*time.Second)
 	return coordinator.RunCycleWithVectors(ctx, cfg.SecretPaths, cfg.EnvMappings, cfg.Templates)
 }
