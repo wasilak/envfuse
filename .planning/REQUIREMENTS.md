@@ -9,10 +9,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Provider Backends
 
-- [ ] **PROV-01**: Operator can configure Vault KVv2 as a secrets backend
-- [ ] **PROV-02**: Operator can configure AWS Secrets Manager as a secrets backend
+- [x] **PROV-01**: Operator can configure Vault KVv2 as a secrets backend
+- [x] **PROV-02**: Operator can configure AWS Secrets Manager as a secrets backend
 - [x] **PROV-03**: Developer can run envfuse with a local JSON file backend for offline testing
-- [ ] **PROV-04**: Operator can switch backend by changing `provider_type` in config without changing templates or app code
+- [x] **PROV-04**: Operator can switch backend by changing `provider_type` in config without changing templates or app code
 
 ### Injection and Rendering
 
@@ -40,7 +40,7 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Security and Observability
 
 - [ ] **SECU-01**: Runtime never logs secret values in stdout/stderr or structured logs
-- [ ] **SECU-02**: Runtime uses TLS for all remote provider communication
+- [x] **SECU-02**: Runtime uses TLS for all remote provider communication
 - [x] **SECU-03**: Runtime only injects secrets into child environment and declared target files
 - [ ] **OBSV-01**: Operator can observe sync success/failure, cycle latency, and restart reason
 
@@ -75,10 +75,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PROV-01 | Phase 4 | Pending |
-| PROV-02 | Phase 4 | Pending |
+| PROV-01 | Phase 4 | Complete |
+| PROV-02 | Phase 4 | Complete |
 | PROV-03 | Phase 1 | Complete |
-| PROV-04 | Phase 4 | Pending |
+| PROV-04 | Phase 4 | Complete |
 | INJT-01 | Phase 2 | Complete |
 | INJT-02 | Phase 2 | Complete |
 | INJT-03 | Phase 2 | Complete |
@@ -94,7 +94,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | RELO-02 | Phase 3 | Complete |
 | RELO-03 | Phase 3 | Complete |
 | SECU-01 | Phase 5 | Pending |
-| SECU-02 | Phase 4 | Pending |
+| SECU-02 | Phase 4 | Complete |
 | SECU-03 | Phase 2 | Complete |
 | OBSV-01 | Phase 5 | Pending |
 

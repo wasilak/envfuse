@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Atomic Sync Foundation (Local-First)** - Establish config-driven local runtime with transactional sync semantics. (completed 2026-05-21)
 - [x] **Phase 2: Dual-Vector Delivery (Env + Templates)** - Materialize secrets into env and files in one validated cycle. (completed 2026-05-21)
 - [x] **Phase 3: PID 1 Supervision & Reload Control** - Run and manage child lifecycle with safe restart behavior. (completed 2026-05-22)
-- [ ] **Phase 4: Production Providers & Secure Transport** - Add Vault/AWS providers and remote TLS-backed fetch paths.
+- [x] **Phase 4: Production Providers & Secure Transport** - Add Vault/AWS providers and remote TLS-backed fetch paths. (completed 2026-05-22)
 - [ ] **Phase 5: Operational Safety & Observability** - Finalize redaction guarantees and operator-facing runtime signals.
 
 ## Phase Details
@@ -125,7 +125,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 04-02-PLAN.md — AWS Secrets Manager provider vertical slice (config fields + narrow interface + factory completion + switchability integration test).
+- [x] 04-02-PLAN.md — AWS Secrets Manager provider vertical slice (config fields + narrow interface + factory completion + switchability integration test).
 
 ### Phase 5: Operational Safety & Observability
 
@@ -150,5 +150,5 @@ Phases execute in numeric order: 2 → 2.1 → 2.2 → 3 → 3.1 → 4
 | 1. Atomic Sync Foundation (Local-First) | 2/2 | Complete   | 2026-05-21 |
 | 2. Dual-Vector Delivery (Env + Templates) | 3/3 | Complete    | 2026-05-21 |
 | 3. PID 1 Supervision & Reload Control | 3/3 | Complete   | 2026-05-22 |
-| 4. Production Providers & Secure Transport | 1/2 | In Progress|  |
+| 4. Production Providers & Secure Transport | 2/2 | Complete   | 2026-05-22 |
 | 5. Operational Safety & Observability | 0/TBD | Not started | - |
