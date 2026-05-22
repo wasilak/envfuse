@@ -35,7 +35,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **SUPV-03**: Runtime enforces configurable graceful shutdown timeout, then force-kills if needed
 - [x] **RELO-01**: Runtime computes a deterministic state fingerprint for fetched/rendered config
 - [x] **RELO-02**: Runtime restarts child process when fingerprint changes after successful apply
-- [ ] **RELO-03**: Runtime avoids restart loops using restart cooldown or coalescing controls
+- [x] **RELO-03**: Runtime avoids restart loops using restart cooldown or coalescing controls
 
 ### Security and Observability
 
@@ -92,7 +92,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SUPV-03 | Phase 3 | Complete |
 | RELO-01 | Phase 3 | Complete |
 | RELO-02 | Phase 3 | Complete |
-| RELO-03 | Phase 3 | Pending |
+| RELO-03 | Phase 3 | Complete |
 | SECU-01 | Phase 5 | Pending |
 | SECU-02 | Phase 4 | Pending |
 | SECU-03 | Phase 2 | Complete |
