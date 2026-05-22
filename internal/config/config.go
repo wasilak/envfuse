@@ -9,13 +9,17 @@ import (
 
 const DefaultShutdownTimeout = 10 * time.Second
 
+// DefaultReloadPollInterval is the default interval between sync cycles in supervisor mode.
+const DefaultReloadPollInterval = 30 * time.Second
+
 type Config struct {
-	ProviderType    string         `json:"provider_type"`
-	LocalFilePath   string         `json:"local_file_path"`
-	SecretPaths     []string       `json:"secret_paths"`
-	EnvMappings     []EnvMapping   `json:"env_mappings,omitempty"`
-	Templates       []TemplateSpec `json:"templates,omitempty"`
-	ShutdownTimeout string         `json:"shutdown_timeout,omitempty"`
+	ProviderType       string         `json:"provider_type"`
+	LocalFilePath      string         `json:"local_file_path"`
+	SecretPaths        []string       `json:"secret_paths"`
+	EnvMappings        []EnvMapping   `json:"env_mappings,omitempty"`
+	Templates          []TemplateSpec `json:"templates,omitempty"`
+	ShutdownTimeout    string         `json:"shutdown_timeout,omitempty"`
+	ReloadPollInterval string         `json:"reload_poll_interval,omitempty"`
 }
 
 // ParsedShutdownTimeout returns the configured shutdown timeout, or the default
@@ -30,6 +34,22 @@ func (c Config) ParsedShutdownTimeout() (time.Duration, error) {
 	}
 	if d <= 0 {
 		return 0, fmt.Errorf("shutdown_timeout: must be a positive duration, got %q", c.ShutdownTimeout)
+	}
+	return d, nil
+}
+
+// ParsedReloadPollInterval returns the configured interval between sync cycles in
+// supervisor mode, or the default if not set. Returns an error for invalid values.
+func (c Config) ParsedReloadPollInterval() (time.Duration, error) {
+	if c.ReloadPollInterval == "" {
+		return DefaultReloadPollInterval, nil
+	}
+	d, err := time.ParseDuration(c.ReloadPollInterval)
+	if err != nil {
+		return 0, fmt.Errorf("reload_poll_interval: invalid duration %q: %w", c.ReloadPollInterval, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("reload_poll_interval: must be a positive duration, got %q", c.ReloadPollInterval)
 	}
 	return d, nil
 }
@@ -88,6 +108,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	if _, err := cfg.ParsedShutdownTimeout(); err != nil {
+		return Config{}, err
+	}
+	if _, err := cfg.ParsedReloadPollInterval(); err != nil {
 		return Config{}, err
 	}
 

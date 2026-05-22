@@ -12,6 +12,7 @@ import (
 	"envfuse/internal/clock"
 	"envfuse/internal/config"
 	"envfuse/internal/fileio"
+	"envfuse/internal/fingerprint"
 	"envfuse/internal/inject"
 	"envfuse/internal/provider"
 	localprovider "envfuse/internal/provider/local"
@@ -138,6 +139,11 @@ func (c *Coordinator) runCycleWithVectors(ctx context.Context, secretPaths []str
 	}
 	sort.Strings(appliedEnv)
 
+	// Compute fingerprint from pre-commit candidate state (D-06).
+	// Only effective env payload + rendered file bytes are included (D-05).
+	// Runtime metadata (timestamps, fetch order) is excluded (D-08).
+	candidateFingerprint := fingerprint.Compute(envPayload, renderedPayload)
+
 	// Stage and commit applied snapshot only after full-batch success, per SYNC-04.
 	c.store.StageCandidate(candidate, envPayload, renderedPayload)
 	c.store.CommitCandidate()
@@ -149,7 +155,13 @@ func (c *Coordinator) runCycleWithVectors(ctx context.Context, secretPaths []str
 	}
 	sort.Strings(renderedFiles)
 
-	return CycleResult{Status: CycleStatusSuccess, FetchedPaths: fetched, AppliedEnv: appliedEnv, RenderedFiles: renderedFiles}
+	return CycleResult{
+		Status:        CycleStatusSuccess,
+		FetchedPaths:  fetched,
+		AppliedEnv:    appliedEnv,
+		RenderedFiles: renderedFiles,
+		Fingerprint:   candidateFingerprint,
+	}
 }
 
 func RunSingleCycleFromConfig(ctx context.Context, configPath string) CycleResult {
