@@ -12,10 +12,7 @@ import (
 func TestSupervisor_StartupFailed(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	result := run(ctx,
+	result := run(t.Context(),
 		[]string{"/nonexistent-binary-that-does-not-exist"},
 		os.Environ(),
 		5*time.Second,
@@ -34,10 +31,7 @@ func TestSupervisor_StartupFailed(t *testing.T) {
 func TestSupervisor_StartupFailedEmptyCommand(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	result := run(ctx, nil, os.Environ(), 5*time.Second)
+	result := run(t.Context(), nil, os.Environ(), 5*time.Second)
 
 	if result.Reason != ReasonStartupFailed {
 		t.Fatalf("expected reason %q for empty command, got %q", ReasonStartupFailed, result.Reason)
@@ -52,10 +46,7 @@ func TestSupervisor_StartupFailedEmptyCommand(t *testing.T) {
 func TestSupervisor_ChildExitedCode(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	result := run(ctx,
+	result := run(t.Context(),
 		[]string{"/bin/sh", "-c", "exit 3"},
 		os.Environ(),
 		5*time.Second,
@@ -74,10 +65,7 @@ func TestSupervisor_ChildExitedCode(t *testing.T) {
 func TestSupervisor_ChildExitedZeroCode(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	result := run(ctx,
+	result := run(t.Context(),
 		[]string{"/bin/sh", "-c", "exit 0"},
 		os.Environ(),
 		5*time.Second,
@@ -99,7 +87,7 @@ func TestSupervisor_ChildExitedZeroCode(t *testing.T) {
 func TestSupervisor_ForcedKillReason(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan Result, 1)
 	go func() {
@@ -136,14 +124,11 @@ func TestSupervisor_ForcedKillReason(t *testing.T) {
 func TestSupervisor_NoAutoRetry(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	start := time.Now()
 
 	// Child exits immediately with non-zero code — if supervisor retried, the test
 	// would take longer than the timeout window.
-	result := run(ctx,
+	result := run(t.Context(),
 		[]string{"/bin/sh", "-c", "exit 7"},
 		os.Environ(),
 		5*time.Second,

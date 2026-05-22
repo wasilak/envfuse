@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	osexec "os/exec"
 	"sort"
@@ -99,9 +100,7 @@ func mergeEnvForChild(inherited []string, envPayload map[string]string) []string
 			}
 		}
 	}
-	for k, v := range envPayload {
-		merged[k] = v
-	}
+	maps.Copy(merged, envPayload)
 	keys := make([]string, 0, len(merged))
 	for k := range merged {
 		keys = append(keys, k)
