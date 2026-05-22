@@ -77,6 +77,10 @@ func runLoop(shutdownCtx context.Context, cfg Config) Result {
 		c, startErr := spawnChild(cfg.Command, childEnv)
 		if startErr != nil {
 			// D-14: startup failure exits non-zero (no retry per D-15).
+			// D-11: child startup failed event.
+			slog.Error("child startup failed",
+				"exit_reason", string(ReasonStartupFailed),
+			)
 			return Result{Reason: ReasonStartupFailed, ExitCode: 1}
 		}
 
@@ -115,18 +119,40 @@ func watch(
 		case waitErr := <-c.waitCh:
 			// Child exited on its own outside controlled shutdown (D-13).
 			exitCode := exitCodeFromErr(waitErr)
+			// D-11: child self-exit event.
+			slog.Info("child exited",
+				"exit_code", exitCode,
+				"exit_reason", string(ReasonChildExited),
+			)
 			return false, Result{Reason: ReasonChildExited, ExitCode: exitCode}
 
 		case <-shutdownCtx.Done():
 			// Host SIGTERM/SIGINT received. Forward to child and wait (SUPV-02/03).
+			// D-11: shutdown event.
+			slog.Info("shutdown signal received, stopping child",
+				"exit_reason", string(ReasonChildExited),
+			)
 			sendSignal(c, syscall.SIGTERM)
 			r := waitOrKill(c.waitCh, c.cmd, cfg.ShutdownTimeout)
+			if r.Reason == ReasonForcedKill {
+				slog.Warn("child force-killed after shutdown timeout",
+					"exit_reason", string(ReasonForcedKill),
+				)
+			}
 			return false, r
 
 		case <-ticker.C:
 			// Check if cooldown expired with a pending restart before running a new cycle.
 			// This ensures the deferred restart fires even if no new change arrives.
 			if !ct.inCooldown() && ct.drainPending() {
+				// D-15: cooldown expired, deferred restart executing.
+				slog.Debug("cooldown expired, draining pending restart",
+					"pending", false,
+				)
+				// D-10: deferred restart event (fingerprints not available at drain time).
+				slog.Info("deferred restart executing",
+					"restart_reason", string(ReasonConfigChanged),
+				)
 				// Pending restart coalesced during previous cooldown window — execute now.
 				sendSignal(c, syscall.SIGTERM)
 				waitOrKill(c.waitCh, c.cmd, cfg.ShutdownTimeout)
@@ -134,9 +160,21 @@ func watch(
 			}
 
 			// Run a sync cycle. Restart only on success + fingerprint change (RELO-02).
+			cycleStart := time.Now()
 			cycleResult := synccycle.RunSingleCycleWithStoreFromConfig(
 				shutdownCtx, cfg.ConfigPath, cfg.Store,
 			)
+			latencyMs := time.Since(cycleStart).Milliseconds()
+
+			// D-09: cycle outcome event.
+			cycleAttrs := []any{
+				"status", string(cycleResult.Status),
+				"latency_ms", latencyMs,
+			}
+			if cycleResult.Status != synccycle.CycleStatusSuccess {
+				cycleAttrs = append(cycleAttrs, "error_class", cycleResult.ErrorClass)
+			}
+			slog.Info("sync cycle", cycleAttrs...)
 
 			if cycleResult.Status != synccycle.CycleStatusSuccess {
 				// Failed/aborted cycle: keep child running with last good config.
@@ -149,17 +187,29 @@ func watch(
 			}
 
 			// Effective config changed. Update fingerprint and env regardless of cooldown.
+			oldFingerprint := *lastFingerprint
 			*lastFingerprint = cycleResult.Fingerprint
 			*childEnv = mergeEnvForRestart(cfg.Env, cfg.Store.LastAppliedEnv())
 
 			if ct.inCooldown() {
 				// D-09/D-10: cooldown active — coalesce to pending; do not restart now.
 				ct.markPending()
+				// D-15: cooldown state debug event.
+				slog.Debug("restart deferred during cooldown",
+					"pending", true,
+					"cooldown_window", effectiveCooldown(cfg).String(),
+				)
 				continue
 			}
 
 			// Cooldown not active: stop child gracefully and signal restart (RELO-01).
 			// config_changed reason (D-16) applies when restart occurs.
+			// D-10: fingerprint change + restart event.
+			slog.Info("config changed, restarting child",
+				"fingerprint_old", truncate8(oldFingerprint),
+				"fingerprint_new", truncate8(cycleResult.Fingerprint),
+				"restart_reason", string(ReasonConfigChanged),
+			)
 			sendSignal(c, syscall.SIGTERM)
 			waitOrKill(c.waitCh, c.cmd, cfg.ShutdownTimeout)
 
@@ -228,6 +278,15 @@ func exitCodeFromErr(err error) int {
 		return exitErr.ExitCode()
 	}
 	return 1
+}
+
+// truncate8 returns the first 8 characters of s (or s itself if shorter).
+// Used to log fingerprint prefixes without exposing full hash values.
+func truncate8(s string) string {
+	if len(s) >= 8 {
+		return s[:8]
+	}
+	return s
 }
 
 // mergeEnvForRestart builds a new child env slice by applying newPayload overrides

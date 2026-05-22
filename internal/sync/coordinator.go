@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"sort"
 	"strings"
@@ -82,10 +83,17 @@ func (c *Coordinator) runCycleWithVectors(ctx context.Context, secretPaths []str
 			pathCtx, cancel := context.WithTimeout(gctx, c.perPathTimeout) // per SYNC-03
 			defer cancel()
 
+			fetchStart := time.Now()
 			data, err := c.provider.Fetch(pathCtx, path)
+			latency := time.Since(fetchStart)
+
+			// D-12: per-path fetch result DEBUG event (path name only, no fetched values).
 			if err != nil {
+				slog.Debug("path fetch result", "path", path, "latency_ms", latency.Milliseconds(), "ok", false)
 				return fmt.Errorf("fetch path %s: %w", path, err)
 			}
+			slog.Debug("path fetch result", "path", path, "latency_ms", latency.Milliseconds(), "ok", true)
+
 			mu.Lock()
 			fetched = append(fetched, path)
 			candidate[path] = copyKV(data)
