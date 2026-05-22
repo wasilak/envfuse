@@ -12,6 +12,10 @@ const DefaultShutdownTimeout = 10 * time.Second
 // DefaultReloadPollInterval is the default interval between sync cycles in supervisor mode.
 const DefaultReloadPollInterval = 30 * time.Second
 
+// DefaultReloadCooldown is the default cooldown window after a restart during which
+// additional config changes are coalesced into a single deferred restart (D-12).
+const DefaultReloadCooldown = 10 * time.Second
+
 type Config struct {
 	ProviderType       string         `json:"provider_type"`
 	LocalFilePath      string         `json:"local_file_path"`
@@ -20,6 +24,7 @@ type Config struct {
 	Templates          []TemplateSpec `json:"templates,omitempty"`
 	ShutdownTimeout    string         `json:"shutdown_timeout,omitempty"`
 	ReloadPollInterval string         `json:"reload_poll_interval,omitempty"`
+	ReloadCooldown     string         `json:"reload_cooldown,omitempty"`
 }
 
 // ParsedShutdownTimeout returns the configured shutdown timeout, or the default
@@ -50,6 +55,23 @@ func (c Config) ParsedReloadPollInterval() (time.Duration, error) {
 	}
 	if d <= 0 {
 		return 0, fmt.Errorf("reload_poll_interval: must be a positive duration, got %q", c.ReloadPollInterval)
+	}
+	return d, nil
+}
+
+// ParsedReloadCooldown returns the configured cooldown window after a restart during which
+// additional config changes are coalesced, or DefaultReloadCooldown (10s) if not set (D-11, D-12).
+// Returns an error if the value is not a valid positive duration.
+func (c Config) ParsedReloadCooldown() (time.Duration, error) {
+	if c.ReloadCooldown == "" {
+		return DefaultReloadCooldown, nil
+	}
+	d, err := time.ParseDuration(c.ReloadCooldown)
+	if err != nil {
+		return 0, fmt.Errorf("reload_cooldown: invalid duration %q: %w", c.ReloadCooldown, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("reload_cooldown: must be a positive duration, got %q", c.ReloadCooldown)
 	}
 	return d, nil
 }
@@ -111,6 +133,9 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, err
 	}
 	if _, err := cfg.ParsedReloadPollInterval(); err != nil {
+		return Config{}, err
+	}
+	if _, err := cfg.ParsedReloadCooldown(); err != nil {
 		return Config{}, err
 	}
 

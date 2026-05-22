@@ -32,6 +32,18 @@ type Config struct {
 	InitialFingerprint string
 	// PollInterval is the interval between subsequent sync cycles.
 	PollInterval time.Duration
+	// ReloadCooldown is the anti-loop window after a restart during which additional
+	// fingerprint changes are coalesced into one deferred restart (D-09, D-11).
+	// Zero means use the default 10s (D-12).
+	ReloadCooldown time.Duration
+}
+
+// effectiveCooldown returns the configured cooldown or the default 10s (D-12).
+func effectiveCooldown(cfg Config) time.Duration {
+	if cfg.ReloadCooldown > 0 {
+		return cfg.ReloadCooldown
+	}
+	return 10 * time.Second
 }
 
 // child holds a running child process and its async wait channel.
@@ -58,6 +70,8 @@ func runLoop(shutdownCtx context.Context, cfg Config) Result {
 	childEnv := make([]string, len(cfg.Env))
 	copy(childEnv, cfg.Env)
 
+	ct := newCooldownTracker(effectiveCooldown(cfg))
+
 	for {
 		c, startErr := spawnChild(cfg.Command, childEnv)
 		if startErr != nil {
@@ -66,20 +80,26 @@ func runLoop(shutdownCtx context.Context, cfg Config) Result {
 		}
 
 		ticker := time.NewTicker(cfg.PollInterval)
-		restart, result := watch(shutdownCtx, cfg, c, ticker, &lastFingerprint, &childEnv)
+		restart, result := watch(shutdownCtx, cfg, c, ticker, &lastFingerprint, &childEnv, ct)
 		ticker.Stop()
 
 		if !restart {
 			// Terminal condition: host shutdown or child self-exit.
 			return result
 		}
-		// restart == true: config changed, child stopped; loop restarts with new env.
+		// restart == true: config changed, child stopped; record restart and loop.
+		ct.recordRestart()
 	}
 }
 
 // watch monitors a running child and drives config polling.
 // Returns (restart=false, result) when the loop should terminate.
 // Returns (restart=true, zero) when config changed and child should be restarted.
+//
+// Cooldown anti-loop (D-09, D-10): if a fingerprint change is detected while the
+// cooldown window is active, the change is recorded as pending and the child is NOT
+// restarted immediately. The next tick after cooldown expiry drains the pending flag
+// and triggers exactly one deferred restart.
 func watch(
 	shutdownCtx context.Context,
 	cfg Config,
@@ -87,6 +107,7 @@ func watch(
 	ticker *time.Ticker,
 	lastFingerprint *string,
 	childEnv *[]string,
+	ct *cooldownTracker,
 ) (restart bool, result Result) {
 	for {
 		select {
@@ -102,6 +123,15 @@ func watch(
 			return false, r
 
 		case <-ticker.C:
+			// Check if cooldown expired with a pending restart before running a new cycle.
+			// This ensures the deferred restart fires even if no new change arrives.
+			if !ct.inCooldown() && ct.drainPending() {
+				// Pending restart coalesced during previous cooldown window — execute now.
+				sendSignal(c, syscall.SIGTERM)
+				waitOrKill(c.waitCh, c.cmd, cfg.ShutdownTimeout)
+				return true, Result{}
+			}
+
 			// Run a sync cycle. Restart only on success + fingerprint change (RELO-02).
 			cycleResult := synccycle.RunSingleCycleWithStoreFromConfig(
 				shutdownCtx, cfg.ConfigPath, cfg.Store,
@@ -117,13 +147,20 @@ func watch(
 				continue
 			}
 
-			// Effective config changed: stop child gracefully, then restart (RELO-01).
+			// Effective config changed. Update fingerprint and env regardless of cooldown.
+			*lastFingerprint = cycleResult.Fingerprint
+			*childEnv = mergeEnvForRestart(cfg.Env, cfg.Store.LastAppliedEnv())
+
+			if ct.inCooldown() {
+				// D-09/D-10: cooldown active — coalesce to pending; do not restart now.
+				ct.markPending()
+				continue
+			}
+
+			// Cooldown not active: stop child gracefully and signal restart (RELO-01).
 			// config_changed reason (D-16) applies when restart occurs.
 			sendSignal(c, syscall.SIGTERM)
 			waitOrKill(c.waitCh, c.cmd, cfg.ShutdownTimeout)
-
-			*lastFingerprint = cycleResult.Fingerprint
-			*childEnv = mergeEnvForRestart(cfg.Env, cfg.Store.LastAppliedEnv())
 
 			return true, Result{}
 		}

@@ -66,6 +66,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	reloadCooldown, err := cfg.ParsedReloadCooldown()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
 	supCfg := supervisor.Config{
 		Command:            flag.Args(),
 		Env:                childEnv,
@@ -74,6 +80,7 @@ func main() {
 		Store:              store,
 		InitialFingerprint: result.Fingerprint,
 		PollInterval:       pollInterval,
+		ReloadCooldown:     reloadCooldown,
 	}
 
 	res := supervisor.Run(supCfg)
