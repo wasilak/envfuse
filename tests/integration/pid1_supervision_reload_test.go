@@ -6,16 +6,54 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 )
+
+// envfuseBin is the path to the compiled envfuse binary used by supervision tests.
+// It is built once in TestMain (shared for this test file's package).
+var (
+	envfuseBinOnce sync.Once
+	envfuseBin     string
+)
+
+// buildEnvfuseBinary compiles the envfuse binary into a temp directory.
+// Returns the path to the compiled binary.
+func buildEnvfuseBinary(t *testing.T) string {
+	t.Helper()
+
+	envfuseBinOnce.Do(func() {
+		tmp, err := os.MkdirTemp("", "envfuse-test-bin-*")
+		if err != nil {
+			t.Errorf("create temp dir for binary: %v", err)
+			return
+		}
+		binPath := filepath.Join(tmp, "envfuse")
+		cmd := exec.Command("go", "build", "-o", binPath, "./cmd/envfuse")
+		cmd.Dir = filepath.Join("..", "..")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Errorf("build envfuse binary: %v\noutput=%s", err, string(out))
+			return
+		}
+		envfuseBin = binPath
+	})
+
+	if envfuseBin == "" {
+		t.Fatal("envfuse binary not available")
+	}
+	return envfuseBin
+}
 
 // TestPID1_StartAndWait verifies that envfuse starts a child command in long-running
 // supervisor mode (without -once) and the child runs until it exits on its own.
 // SUPV-01: Runtime can run as PID 1 and start the configured child command.
 func TestPID1_StartAndWait(t *testing.T) {
 	t.Parallel()
+
+	bin := buildEnvfuseBinary(t)
 
 	tmpDir := t.TempDir()
 	secretsPath := filepath.Join(tmpDir, "secrets.json")
@@ -44,12 +82,11 @@ func TestPID1_StartAndWait(t *testing.T) {
 
 	// Run envfuse WITHOUT -once flag to exercise long-running supervisor mode.
 	// Child command writes env value and exits immediately.
-	cmd := exec.Command("go", "run", "./cmd/envfuse",
+	cmd := exec.Command(bin,
 		"-config", configPath,
 		"--", "/bin/sh", "-c",
 		"printf '%s' \"$APP_API_KEY\" > '"+childOutPath+"'",
 	)
-	cmd.Dir = filepath.Join("..", "..")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -70,6 +107,8 @@ func TestPID1_StartAndWait(t *testing.T) {
 // SUPV-02: Runtime forwards SIGTERM and SIGINT to child process.
 func TestPID1_SignalForwarding(t *testing.T) {
 	t.Parallel()
+
+	bin := buildEnvfuseBinary(t)
 
 	tmpDir := t.TempDir()
 	secretsPath := filepath.Join(tmpDir, "secrets.json")
@@ -97,18 +136,19 @@ func TestPID1_SignalForwarding(t *testing.T) {
 		t.Fatalf("write config fixture: %v", err)
 	}
 
-	// Child: writes ready marker, traps SIGTERM and records exit, then sleeps.
+	// Child: writes ready marker, traps SIGTERM, writes exit marker then exits 0.
+	// The wait-in-loop pattern ensures the trap fires even while sleeping (POSIX sh
+	// does not interrupt foreground sleep on SIGTERM without background+wait).
 	childScript := `
 trap 'printf done > "` + childExitedPath + `"; exit 0' TERM
 printf ready > "` + childReadyPath + `"
-sleep 30
+while true; do sleep 1 & wait; done
 `
 
-	cmd := exec.Command("go", "run", "./cmd/envfuse",
+	cmd := exec.Command(bin,
 		"-config", configPath,
 		"--", "/bin/sh", "-c", childScript,
 	)
-	cmd.Dir = filepath.Join("..", "..")
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start envfuse: %v", err)
@@ -127,7 +167,7 @@ sleep 30
 		t.Fatalf("child never signaled ready")
 	}
 
-	// Send SIGTERM to envfuse process — should forward to child.
+	// Send SIGTERM to the envfuse process — it must forward it to the child.
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("send SIGTERM to envfuse: %v", err)
 	}
@@ -154,10 +194,12 @@ sleep 30
 
 // TestPID1_GraceTimeoutForceKill verifies that when a child ignores SIGTERM and does not
 // exit within the grace window, envfuse force-kills the child process only (D-03)
-// and the exit reason is classified as forced_kill (D-16).
+// and records the forced_kill reason (D-16).
 // SUPV-03: Runtime enforces configurable graceful shutdown timeout, then force-kills.
 func TestPID1_GraceTimeoutForceKill(t *testing.T) {
 	t.Parallel()
+
+	bin := buildEnvfuseBinary(t)
 
 	tmpDir := t.TempDir()
 	secretsPath := filepath.Join(tmpDir, "secrets.json")
@@ -186,7 +228,7 @@ func TestPID1_GraceTimeoutForceKill(t *testing.T) {
 		t.Fatalf("write config fixture: %v", err)
 	}
 
-	// Child: ignores SIGTERM entirely, records its PID and signals readiness, then sleeps.
+	// Child: ignores SIGTERM entirely, records its PID, signals readiness, then sleeps.
 	childScript := `
 trap '' TERM
 printf '%d' $$ > "` + childPIDPath + `"
@@ -194,11 +236,10 @@ printf ready > "` + childReadyPath + `"
 sleep 60
 `
 
-	cmd := exec.Command("go", "run", "./cmd/envfuse",
+	cmd := exec.Command(bin,
 		"-config", configPath,
 		"--", "/bin/sh", "-c", childScript,
 	)
-	cmd.Dir = filepath.Join("..", "..")
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start envfuse: %v", err)
@@ -248,15 +289,17 @@ sleep 60
 	elapsed := time.Since(start)
 
 	// Envfuse should have exited after the 1s timeout + a small processing margin.
-	// Force-kill must complete well before the test deadline but after the timeout.
-	if elapsed < 500*time.Millisecond {
-		t.Errorf("envfuse exited too fast (%v); expected at least 500ms grace window", elapsed)
+	// Force-kill must complete after the timeout window.
+	if elapsed < 800*time.Millisecond {
+		t.Errorf("envfuse exited too fast (%v); expected at least 800ms grace window", elapsed)
 	}
 
-	// Child process must no longer be alive (force-killed).
+	// Child process must no longer be alive (force-killed by envfuse).
+	// Give the kernel a moment to reap.
+	time.Sleep(100 * time.Millisecond)
 	childProc, err := os.FindProcess(childPID)
 	if err == nil {
-		// Signal(0) tests existence without delivering a signal.
+		// Signal(0) tests process existence without delivering a signal.
 		if err2 := childProc.Signal(syscall.Signal(0)); err2 == nil {
 			t.Errorf("child PID %d is still alive after force-kill; expected it to be dead", childPID)
 		}

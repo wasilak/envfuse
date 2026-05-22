@@ -4,14 +4,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 )
 
+const DefaultShutdownTimeout = 10 * time.Second
+
 type Config struct {
-	ProviderType  string         `json:"provider_type"`
-	LocalFilePath string         `json:"local_file_path"`
-	SecretPaths   []string       `json:"secret_paths"`
-	EnvMappings   []EnvMapping   `json:"env_mappings,omitempty"`
-	Templates     []TemplateSpec `json:"templates,omitempty"`
+	ProviderType    string         `json:"provider_type"`
+	LocalFilePath   string         `json:"local_file_path"`
+	SecretPaths     []string       `json:"secret_paths"`
+	EnvMappings     []EnvMapping   `json:"env_mappings,omitempty"`
+	Templates       []TemplateSpec `json:"templates,omitempty"`
+	ShutdownTimeout string         `json:"shutdown_timeout,omitempty"`
+}
+
+// ParsedShutdownTimeout returns the configured shutdown timeout, or the default
+// value if not set (D-01). Returns an error if the value is not a valid duration.
+func (c Config) ParsedShutdownTimeout() (time.Duration, error) {
+	if c.ShutdownTimeout == "" {
+		return DefaultShutdownTimeout, nil
+	}
+	d, err := time.ParseDuration(c.ShutdownTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("shutdown_timeout: invalid duration %q: %w", c.ShutdownTimeout, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("shutdown_timeout: must be a positive duration, got %q", c.ShutdownTimeout)
+	}
+	return d, nil
 }
 
 type EnvMapping struct {
@@ -65,6 +85,10 @@ func LoadConfig(path string) (Config, error) {
 			return Config{}, fmt.Errorf("env_mappings[%d].env_var is duplicated: %s", i, mapping.EnvVar)
 		}
 		seenEnvVars[mapping.EnvVar] = struct{}{}
+	}
+
+	if _, err := cfg.ParsedShutdownTimeout(); err != nil {
+		return Config{}, err
 	}
 
 	seenOutputs := make(map[string]struct{}, len(cfg.Templates))
