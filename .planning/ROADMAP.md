@@ -14,7 +14,7 @@ This roadmap delivers envfuse as a deterministic container runtime that first pr
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Atomic Sync Foundation (Local-First)** - Establish config-driven local runtime with transactional sync semantics. (completed 2026-05-21)
-- [ ] **Phase 2: Dual-Vector Delivery (Env + Templates)** - Materialize secrets into env and files in one validated cycle.
+- [x] **Phase 2: Dual-Vector Delivery (Env + Templates)** - Materialize secrets into env and files in one validated cycle. (completed 2026-05-21)
 - [ ] **Phase 3: PID 1 Supervision & Reload Control** - Run and manage child lifecycle with safe restart behavior.
 - [ ] **Phase 4: Production Providers & Secure Transport** - Add Vault/AWS providers and remote TLS-backed fetch paths.
 - [ ] **Phase 5: Operational Safety & Observability** - Finalize redaction guarantees and operator-facing runtime signals.
@@ -64,15 +64,15 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 02-01-PLAN.md — Env-mapping vertical slice with strict schema validation and atomic env payload commit.
+- [x] 02-01-PLAN.md — Env-mapping vertical slice with strict schema validation and atomic env payload commit.
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 02-02-PLAN.md — Templates + file rendering wired into unified dual-vector atomic commit with fail-fast missing-key/path guards.
+- [x] 02-02-PLAN.md — Templates + file rendering wired into unified dual-vector atomic commit with fail-fast missing-key/path guards.
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 02-03-PLAN.md — Gap-closure plan: fix Phase 2 MVP goal to valid user-story format and rerun verification to clear blocker.
+- [x] 02-03-PLAN.md — Gap-closure plan: fix Phase 2 MVP goal to valid user-story format and rerun verification to clear blocker.
 
 ### Phase 3: PID 1 Supervision & Reload Control
 
@@ -88,7 +88,20 @@ Plans:
   4. Runtime computes a deterministic fingerprint of fetched/rendered effective state.
   5. Runtime restarts the child only on successful changed-state cycles, with cooldown/coalescing to prevent restart loops.
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+**Wave 1**
+
+- [x] 03-01-PLAN.md — PID1 supervision vertical slice (start/wait lifecycle, signal forwarding, graceful timeout + forced kill).
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 03-02-PLAN.md — Deterministic fingerprint + restart-on-change vertical slice (candidate-state hash gating).
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 03-03-PLAN.md — Cooldown/coalescing anti-loop vertical slice (single deferred restart during rapid churn).
 
 ### Phase 4: Production Providers & Secure Transport
 
@@ -126,7 +139,7 @@ Phases execute in numeric order: 2 → 2.1 → 2.2 → 3 → 3.1 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Atomic Sync Foundation (Local-First) | 2/2 | Complete   | 2026-05-21 |
-| 2. Dual-Vector Delivery (Env + Templates) | 0/TBD | Not started | - |
-| 3. PID 1 Supervision & Reload Control | 0/TBD | Not started | - |
+| 2. Dual-Vector Delivery (Env + Templates) | 3/3 | Complete    | 2026-05-21 |
+| 3. PID 1 Supervision & Reload Control | 1/3 | In Progress|  |
 | 4. Production Providers & Secure Transport | 0/TBD | Not started | - |
 | 5. Operational Safety & Observability | 0/TBD | Not started | - |
