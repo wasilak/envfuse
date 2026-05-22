@@ -7,16 +7,33 @@ import (
 	"time"
 )
 
+// noCyclePollInterval is long enough that the cycle ticker never fires during unit tests.
+// Unit tests exercise the child lifecycle paths, not the config-change polling path.
+const noCyclePollInterval = 24 * time.Hour
+
+// makeTestConfig returns a minimal supervisor Config for unit tests.
+// The poll interval is set to noCyclePollInterval so the cycle ticker
+// never fires; tests exercise only the child lifecycle paths.
+func makeTestConfig(command []string) Config {
+	return Config{
+		Command:         command,
+		Env:             os.Environ(),
+		ShutdownTimeout: 5 * time.Second,
+		// ConfigPath and Store are unused when PollInterval is too long to fire.
+		ConfigPath:   "",
+		Store:        nil,
+		PollInterval: noCyclePollInterval,
+	}
+}
+
 // TestSupervisor_StartupFailed verifies that a command that cannot be started
 // returns ReasonStartupFailed with a non-zero exit code (D-14).
 func TestSupervisor_StartupFailed(t *testing.T) {
 	t.Parallel()
 
-	result := run(t.Context(),
+	result := runLoop(t.Context(), makeTestConfig(
 		[]string{"/nonexistent-binary-that-does-not-exist"},
-		os.Environ(),
-		5*time.Second,
-	)
+	))
 
 	if result.Reason != ReasonStartupFailed {
 		t.Fatalf("expected reason %q, got %q", ReasonStartupFailed, result.Reason)
@@ -31,7 +48,7 @@ func TestSupervisor_StartupFailed(t *testing.T) {
 func TestSupervisor_StartupFailedEmptyCommand(t *testing.T) {
 	t.Parallel()
 
-	result := run(t.Context(), nil, os.Environ(), 5*time.Second)
+	result := runLoop(t.Context(), makeTestConfig(nil))
 
 	if result.Reason != ReasonStartupFailed {
 		t.Fatalf("expected reason %q for empty command, got %q", ReasonStartupFailed, result.Reason)
@@ -46,11 +63,9 @@ func TestSupervisor_StartupFailedEmptyCommand(t *testing.T) {
 func TestSupervisor_ChildExitedCode(t *testing.T) {
 	t.Parallel()
 
-	result := run(t.Context(),
+	result := runLoop(t.Context(), makeTestConfig(
 		[]string{"/bin/sh", "-c", "exit 3"},
-		os.Environ(),
-		5*time.Second,
-	)
+	))
 
 	if result.Reason != ReasonChildExited {
 		t.Fatalf("expected reason %q, got %q", ReasonChildExited, result.Reason)
@@ -65,11 +80,9 @@ func TestSupervisor_ChildExitedCode(t *testing.T) {
 func TestSupervisor_ChildExitedZeroCode(t *testing.T) {
 	t.Parallel()
 
-	result := run(t.Context(),
+	result := runLoop(t.Context(), makeTestConfig(
 		[]string{"/bin/sh", "-c", "exit 0"},
-		os.Environ(),
-		5*time.Second,
-	)
+	))
 
 	if result.Reason != ReasonChildExited {
 		t.Fatalf("expected reason %q, got %q", ReasonChildExited, result.Reason)
@@ -89,18 +102,19 @@ func TestSupervisor_ForcedKillReason(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 
+	cfg := Config{
+		Command:         []string{"/bin/sh", "-c", "trap '' TERM; while true; do sleep 1 & wait; done"},
+		Env:             os.Environ(),
+		ShutdownTimeout: 300 * time.Millisecond,
+		PollInterval:    noCyclePollInterval,
+	}
+
 	done := make(chan Result, 1)
 	go func() {
-		// Child ignores SIGTERM and sleeps indefinitely.
-		// Short shutdownTimeout (300ms) triggers force-kill after context is cancelled.
-		done <- run(ctx,
-			[]string{"/bin/sh", "-c", "trap '' TERM; while true; do sleep 1 & wait; done"},
-			os.Environ(),
-			300*time.Millisecond,
-		)
+		done <- runLoop(ctx, cfg)
 	}()
 
-	// Wait until the child is running (give it a short moment to start).
+	// Wait until the child is running.
 	time.Sleep(200 * time.Millisecond)
 
 	// Cancel context to simulate host SIGTERM arriving at envfuse.
@@ -126,17 +140,12 @@ func TestSupervisor_NoAutoRetry(t *testing.T) {
 
 	start := time.Now()
 
-	// Child exits immediately with non-zero code — if supervisor retried, the test
-	// would take longer than the timeout window.
-	result := run(t.Context(),
+	result := runLoop(t.Context(), makeTestConfig(
 		[]string{"/bin/sh", "-c", "exit 7"},
-		os.Environ(),
-		5*time.Second,
-	)
+	))
 
 	elapsed := time.Since(start)
 
-	// Must return quickly — no retry loop.
 	if elapsed > 2*time.Second {
 		t.Errorf("supervisor took %v; expected near-instant return without retry (D-15)", elapsed)
 	}

@@ -6,34 +6,134 @@ import (
 	"os"
 	osexec "os/exec"
 	"os/signal"
+	"sort"
 	"syscall"
 	"time"
+
+	"envfuse/internal/state"
+	synccycle "envfuse/internal/sync"
 )
 
-// Run starts the child command with the given environment and supervises it as PID 1.
-// It subscribes to SIGTERM/SIGINT from the OS and forwards them to the child.
-//
-// Behavior:
-//   - SIGTERM and SIGINT received by envfuse are forwarded to the child process (SUPV-02).
-//   - If child does not exit within shutdownTimeout after the signal, child is force-killed
-//     via SIGKILL to the child process only (D-03, SUPV-03).
-//   - If child exits on its own (outside controlled shutdown), returns ReasonChildExited
-//     with the child's exit code (D-13).
-//   - If child fails to start, returns ReasonStartupFailed (D-14).
-//   - No crash auto-retry; single run only (D-15).
-func Run(command []string, env []string, shutdownTimeout time.Duration) Result {
-	// Subscribe to host signals. Accept only SIGTERM and SIGINT (T-03-02).
-	sigCtx, stopSig := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSig()
-
-	return run(sigCtx, command, env, shutdownTimeout)
+// Config holds the full set of parameters for the supervision loop.
+type Config struct {
+	// Command is the child command and arguments to supervise.
+	Command []string
+	// Env is the initial environment for the child process (merged from host + applied secrets).
+	Env []string
+	// ShutdownTimeout is the grace window before force-killing the child (D-01/D-02).
+	ShutdownTimeout time.Duration
+	// ConfigPath is the envfuse config file used for subsequent sync cycles.
+	ConfigPath string
+	// Store is the state store shared with the sync coordinator.
+	Store *state.Store
+	// InitialFingerprint is the fingerprint from the first committed cycle.
+	// Used as baseline for change detection (RELO-02).
+	InitialFingerprint string
+	// PollInterval is the interval between subsequent sync cycles.
+	PollInterval time.Duration
 }
 
-// run is the internal implementation that accepts a context for shutdown signaling.
-// This allows unit tests to inject a cancellable context instead of relying on OS signals.
-func run(shutdownCtx context.Context, command []string, env []string, shutdownTimeout time.Duration) Result {
+// child holds a running child process and its async wait channel.
+type child struct {
+	cmd    *osexec.Cmd
+	waitCh chan error
+}
+
+// Run starts the child command and supervises it as PID 1, running sync cycles at
+// PollInterval to detect config changes. When effective config changes, the child is
+// stopped and restarted with the new environment (RELO-01/RELO-02).
+//
+// Subscribes to SIGTERM/SIGINT from the OS and forwards them to the child (T-03-02).
+func Run(cfg Config) Result {
+	sigCtx, stopSig := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSig()
+	return runLoop(sigCtx, cfg)
+}
+
+// runLoop is the internal supervision loop, accepting a context for shutdown signaling
+// so unit tests can inject cancellation without OS signals.
+func runLoop(shutdownCtx context.Context, cfg Config) Result {
+	lastFingerprint := cfg.InitialFingerprint
+	childEnv := make([]string, len(cfg.Env))
+	copy(childEnv, cfg.Env)
+
+	for {
+		c, startErr := spawnChild(cfg.Command, childEnv)
+		if startErr != nil {
+			// D-14: startup failure exits non-zero (no retry per D-15).
+			return Result{Reason: ReasonStartupFailed, ExitCode: 1}
+		}
+
+		ticker := time.NewTicker(cfg.PollInterval)
+		restart, result := watch(shutdownCtx, cfg, c, ticker, &lastFingerprint, &childEnv)
+		ticker.Stop()
+
+		if !restart {
+			// Terminal condition: host shutdown or child self-exit.
+			return result
+		}
+		// restart == true: config changed, child stopped; loop restarts with new env.
+	}
+}
+
+// watch monitors a running child and drives config polling.
+// Returns (restart=false, result) when the loop should terminate.
+// Returns (restart=true, zero) when config changed and child should be restarted.
+func watch(
+	shutdownCtx context.Context,
+	cfg Config,
+	c *child,
+	ticker *time.Ticker,
+	lastFingerprint *string,
+	childEnv *[]string,
+) (restart bool, result Result) {
+	for {
+		select {
+		case waitErr := <-c.waitCh:
+			// Child exited on its own outside controlled shutdown (D-13).
+			exitCode := exitCodeFromErr(waitErr)
+			return false, Result{Reason: ReasonChildExited, ExitCode: exitCode}
+
+		case <-shutdownCtx.Done():
+			// Host SIGTERM/SIGINT received. Forward to child and wait (SUPV-02/03).
+			sendSignal(c, syscall.SIGTERM)
+			r := waitOrKill(c.waitCh, c.cmd, cfg.ShutdownTimeout)
+			return false, r
+
+		case <-ticker.C:
+			// Run a sync cycle. Restart only on success + fingerprint change (RELO-02).
+			cycleResult := synccycle.RunSingleCycleWithStoreFromConfig(
+				shutdownCtx, cfg.ConfigPath, cfg.Store,
+			)
+
+			if cycleResult.Status != synccycle.CycleStatusSuccess {
+				// Failed/aborted cycle: keep child running with last good config.
+				continue
+			}
+
+			if cycleResult.Fingerprint == *lastFingerprint {
+				// Effective config unchanged: no restart (RELO-02).
+				continue
+			}
+
+			// Effective config changed: stop child gracefully, then restart (RELO-01).
+			// config_changed reason (D-16) applies when restart occurs.
+			sendSignal(c, syscall.SIGTERM)
+			waitOrKill(c.waitCh, c.cmd, cfg.ShutdownTimeout)
+
+			*lastFingerprint = cycleResult.Fingerprint
+			*childEnv = mergeEnvForRestart(cfg.Env, cfg.Store.LastAppliedEnv())
+
+			return true, Result{}
+		}
+	}
+}
+
+// spawnChild launches the child command asynchronously.
+// Returns an error if the process cannot be started (D-14).
+func spawnChild(command []string, env []string) (*child, error) {
 	if len(command) == 0 {
-		return Result{Reason: ReasonStartupFailed, ExitCode: 1}
+		return nil, fmt.Errorf("empty command")
 	}
 
 	cmd := osexec.Command(command[0], command[1:]...)
@@ -44,63 +144,78 @@ func run(shutdownCtx context.Context, command []string, env []string, shutdownTi
 
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "supervisor: start child: %v\n", err)
-		return Result{Reason: ReasonStartupFailed, ExitCode: 1}
+		return nil, err
 	}
 
-	// waitCh receives the child exit error asynchronously.
 	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- cmd.Wait()
-	}()
+	go func() { waitCh <- cmd.Wait() }()
 
-	select {
-	case waitErr := <-waitCh:
-		// Child exited on its own outside any controlled shutdown — D-13.
-		exitCode := exitCodeFrom(waitErr, cmd)
-		return Result{Reason: ReasonChildExited, ExitCode: exitCode}
+	return &child{cmd: cmd, waitCh: waitCh}, nil
+}
 
-	case <-shutdownCtx.Done():
-		// Shutdown signal received (host SIGTERM/SIGINT or test context cancellation).
-		// Forward the signal to the child process only (D-03 — not process group).
-		if cmd.Process != nil {
-			_ = cmd.Process.Signal(syscall.SIGTERM)
-		}
-
-		// Wait up to shutdownTimeout for the child to exit gracefully (D-01/D-02).
-		killTimer := time.NewTimer(shutdownTimeout)
-		defer killTimer.Stop()
-
-		select {
-		case waitErr := <-waitCh:
-			// Child exited within grace window.
-			exitCode := exitCodeFrom(waitErr, cmd)
-			return Result{Reason: ReasonChildExited, ExitCode: exitCode}
-
-		case <-killTimer.C:
-			// Grace timeout expired — force-kill child process only (D-03).
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
-			// Wait for kill to complete; process must be reaped to avoid zombies.
-			<-waitCh
-			exitCode := 0
-			if cmd.ProcessState != nil {
-				exitCode = cmd.ProcessState.ExitCode()
-			}
-			// D-04: record forced_kill reason after deterministic stop.
-			return Result{Reason: ReasonForcedKill, ExitCode: exitCode, Killed: true}
-		}
+// sendSignal delivers a signal to the child process only (D-03: not process group).
+func sendSignal(c *child, sig syscall.Signal) {
+	if c.cmd.Process != nil {
+		_ = c.cmd.Process.Signal(sig)
 	}
 }
 
-// exitCodeFrom extracts the process exit code from a Wait error, falling back to
-// the ProcessState when available.
-func exitCodeFrom(waitErr error, cmd *osexec.Cmd) int {
-	if waitErr == nil {
+// waitOrKill waits for the child to exit within shutdownTimeout, then force-kills (D-03/D-04).
+func waitOrKill(waitCh <-chan error, cmd *osexec.Cmd, shutdownTimeout time.Duration) Result {
+	killTimer := time.NewTimer(shutdownTimeout)
+	defer killTimer.Stop()
+
+	select {
+	case waitErr := <-waitCh:
+		exitCode := exitCodeFromErr(waitErr)
+		return Result{Reason: ReasonChildExited, ExitCode: exitCode}
+
+	case <-killTimer.C:
+		// Grace window expired; force-kill child process only (D-03).
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		<-waitCh
+		return Result{Reason: ReasonForcedKill, Killed: true}
+	}
+}
+
+// exitCodeFromErr extracts an exit code from a cmd.Wait() error.
+func exitCodeFromErr(err error) int {
+	if err == nil {
 		return 0
 	}
-	if cmd.ProcessState != nil {
-		return cmd.ProcessState.ExitCode()
+	if exitErr, ok := err.(*osexec.ExitError); ok {
+		return exitErr.ExitCode()
 	}
 	return 1
+}
+
+// mergeEnvForRestart builds a new child env slice by applying newPayload overrides
+// on top of the original inherited environment. Matches launcher canonicalization.
+func mergeEnvForRestart(originalEnv []string, newPayload map[string]string) []string {
+	merged := make(map[string]string, len(originalEnv)+len(newPayload))
+	for _, item := range originalEnv {
+		for i := 0; i < len(item); i++ {
+			if item[i] == '=' {
+				merged[item[:i]] = item[i+1:]
+				break
+			}
+		}
+	}
+	for k, v := range newPayload {
+		merged[k] = v
+	}
+
+	keys := make([]string, 0, len(merged))
+	for k := range merged {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, fmt.Sprintf("%s=%s", k, merged[k]))
+	}
+	return out
 }

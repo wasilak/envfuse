@@ -60,7 +60,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	res := supervisor.Run(flag.Args(), childEnv, shutdownTimeout)
+	pollInterval, err := cfg.ParsedReloadPollInterval()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	supCfg := supervisor.Config{
+		Command:            flag.Args(),
+		Env:                childEnv,
+		ShutdownTimeout:    shutdownTimeout,
+		ConfigPath:         configPath,
+		Store:              store,
+		InitialFingerprint: result.Fingerprint,
+		PollInterval:       pollInterval,
+	}
+
+	res := supervisor.Run(supCfg)
 
 	switch res.Reason {
 	case supervisor.ReasonStartupFailed:
