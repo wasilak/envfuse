@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -75,7 +76,6 @@ func (c *Coordinator) runCycleWithVectors(ctx context.Context, secretPaths []str
 
 	g, gctx := errgroup.WithContext(ctx)
 	for _, path := range uniq {
-		path := path
 		g.Go(func() error {
 			pathCtx, cancel := context.WithTimeout(gctx, c.perPathTimeout) // per SYNC-03
 			defer cancel()
@@ -209,8 +209,6 @@ func dedupe(in []string) []string {
 
 func copyKV(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }

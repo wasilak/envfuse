@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	osexec "os/exec"
 	"os/signal"
@@ -203,9 +204,7 @@ func mergeEnvForRestart(originalEnv []string, newPayload map[string]string) []st
 			}
 		}
 	}
-	for k, v := range newPayload {
-		merged[k] = v
-	}
+	maps.Copy(merged, newPayload)
 
 	keys := make([]string, 0, len(merged))
 	for k := range merged {
