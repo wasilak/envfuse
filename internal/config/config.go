@@ -30,6 +30,8 @@ type Config struct {
 	VaultToken         string         `json:"vault_token,omitempty"`
 	VaultMount         string         `json:"vault_mount,omitempty"`
 	VaultTLSCACert     string         `json:"vault_tls_ca_cert,omitempty"`
+	AWSRegion          string         `json:"aws_region,omitempty"`
+	AWSEndpoint        string         `json:"aws_endpoint,omitempty"`
 }
 
 // ParsedShutdownTimeout returns the configured shutdown timeout, or the default

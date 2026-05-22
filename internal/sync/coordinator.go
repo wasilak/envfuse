@@ -16,6 +16,7 @@ import (
 	"envfuse/internal/fingerprint"
 	"envfuse/internal/inject"
 	"envfuse/internal/provider"
+	awsprovider "envfuse/internal/provider/aws"
 	localprovider "envfuse/internal/provider/local"
 	vaultprovider "envfuse/internal/provider/vault"
 	"envfuse/internal/render"
@@ -165,7 +166,7 @@ func (c *Coordinator) runCycleWithVectors(ctx context.Context, secretPaths []str
 	}
 }
 
-func buildProvider(_ context.Context, cfg config.Config) (provider.Provider, error) {
+func buildProvider(ctx context.Context, cfg config.Config) (provider.Provider, error) {
 	switch cfg.ProviderType {
 	case "local":
 		return localprovider.New(cfg.LocalFilePath), nil
@@ -177,7 +178,10 @@ func buildProvider(_ context.Context, cfg config.Config) (provider.Provider, err
 			TLSCACert: cfg.VaultTLSCACert,
 		})
 	case "aws":
-		return nil, fmt.Errorf("aws provider not yet implemented")
+		return awsprovider.New(ctx, awsprovider.Config{
+			Region:   cfg.AWSRegion,
+			Endpoint: cfg.AWSEndpoint,
+		})
 	default:
 		return nil, fmt.Errorf("unsupported provider_type: %q", cfg.ProviderType)
 	}
